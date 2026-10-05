@@ -1,0 +1,25 @@
+{
+  "title": "Teamwear Custom Logo on Right Sleeve Flip",
+  "result": {
+    "status": "FAILED",
+    "error": "Step 2 (click \"DECORATION\") failed: No element matching \"DECORATION\". Visible buttons/links on the page: VIEW SUMMARY",
+    "steps": [
+      {
+        "index": 0,
+        "action": "navigate",
+        "target": "/?projectId=193&modelCode=PTS8013CU",
+        "status": "PASSED",
+        "durationMs": 853
+      },
+      {
+        "index": 1,
+        "action": "click",
+        "target": "DECORATION",
+        "status": "FAILED",
+        "error": "No element matching \"DECORATION\". Visible buttons/links on the page: VIEW SUMMARY",
+        "durationMs": 148
+      }
+    ],
+    "screenshotPath": "cmuowxpl4000ab3kcmzczclmd\\cmun8b8yf000eb3n8vzprqf56-step-2.png"
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "title": "Apply Upside Down Logo on Right Sleeve",
+  "result": {
+    "status": "FAILED",
+    "error": "Step 9 (click \"MY ART\") failed: No clickable element matching \"MY ART\". Visible buttons/links on the page: Go Back | Previous | Next | VIEW SUMMARY. Last stage error: locator.click: Timeout 4000ms exceeded.",
+    "steps": [
+      {
+        "index": 0,
+        "action": "navigate",
+        "target": "/?projectId=193&modelCode=PTS8013CU",
+        "status": "PASSED",
+        "durationMs": 15584
+      },
+      {
+        "index": 1,
+        "action": "click",
+        "target": "Next",
+        "status": "PASSED",
+        "durationMs": 100
+      },
+      {
+        "index": 2,
+        "action": "click",
+        "target": "Next",
+        "status": "PASSED",
+        "durationMs": 41
+      },
+      {
+        "index": 3,
+        "action": "click",
+        "target": "Next",
+        "status": "PASSED",
+        "durationMs": 55
+      },
+      {
+        "index": 4,
+        "action": "click",
+        "target": "Next",
+        "status": "PASSED",
+        "durationMs": 68
+      },
+      {
+        "index": 5,
+        "action": "click",
+        "target": "HYPR TWILL",
+        "status": "PASSED",
+        "durationMs": 12093
+      },
+      {
+        "index": 6,
+        "action": "click",
+        "target": "RIGHT SLEEVE",
+        "status": "PASSED",
+        "durationMs": 12082
+      },
+      {
+        "index": 7,
+        "action": "click",
+        "target": "CUSTOM",
+        "status": "PASSED",
+        "durationMs": 12086
+      },
+      {
+        "index": 8,
+        "action": "click",
+        "target": "MY ART",
+        "status": "FAILED",
+        "error": "No clickable element matching \"MY ART\". Visible buttons/links on the page: Go Back | Previous | Next | VIEW SUMMARY. Last stage error: locator.click: Timeout 4000ms exceeded.",
+        "durationMs": 40565
+      }
+    ],
+    "screenshotPath": "cmuqu92j5000kb3xk1xpvemhh\\cmun8b8yf000eb3n8vzprqf56-step-9.png"
+  }
+}

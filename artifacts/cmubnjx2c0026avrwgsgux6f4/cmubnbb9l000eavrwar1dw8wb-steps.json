@@ -1,0 +1,36 @@
+{
+  "title": "Checkout completes an order",
+  "result": {
+    "status": "PASSED",
+    "steps": [
+      {
+        "index": 0,
+        "action": "navigate",
+        "target": "http://localhost:4600",
+        "status": "PASSED",
+        "durationMs": 15
+      },
+      {
+        "index": 1,
+        "action": "click",
+        "target": "Add to cart",
+        "status": "PASSED",
+        "durationMs": 75
+      },
+      {
+        "index": 2,
+        "action": "click",
+        "target": "Checkout",
+        "status": "PASSED",
+        "durationMs": 46
+      },
+      {
+        "index": 3,
+        "action": "assert",
+        "target": "Order placed",
+        "status": "PASSED",
+        "durationMs": 5
+      }
+    ]
+  }
+}

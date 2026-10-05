@@ -1,0 +1,74 @@
+{
+  "title": "Apply Upside Down Logo on Right Sleeve",
+  "result": {
+    "status": "FAILED",
+    "error": "Step 9 (fill \"__PROOFLINE_USER__\") failed: locator.fill: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('input:not([type=\"password\"]):visible, input[type=\"email\"]:visible').last()\u001b[22m\n",
+    "steps": [
+      {
+        "index": 0,
+        "action": "navigate",
+        "target": "/?projectId=193&modelCode=PTS8013CU",
+        "status": "PASSED",
+        "durationMs": 2230
+      },
+      {
+        "index": 1,
+        "action": "click",
+        "target": "Next",
+        "status": "PASSED",
+        "durationMs": 2912
+      },
+      {
+        "index": 2,
+        "action": "click",
+        "target": "Next",
+        "status": "PASSED",
+        "durationMs": 61
+      },
+      {
+        "index": 3,
+        "action": "click",
+        "target": "Next",
+        "status": "PASSED",
+        "durationMs": 39
+      },
+      {
+        "index": 4,
+        "action": "click",
+        "target": "Next",
+        "status": "PASSED",
+        "durationMs": 57
+      },
+      {
+        "index": 5,
+        "action": "click",
+        "target": "HYPR TWILL",
+        "status": "PASSED",
+        "durationMs": 12083
+      },
+      {
+        "index": 6,
+        "action": "click",
+        "target": "RIGHT SLEEVE",
+        "status": "PASSED",
+        "durationMs": 12071
+      },
+      {
+        "index": 7,
+        "action": "click",
+        "target": "CUSTOM",
+        "status": "PASSED",
+        "durationMs": 12099
+      },
+      {
+        "index": 8,
+        "action": "fill",
+        "target": "__PROOFLINE_USER__",
+        "status": "FAILED",
+        "error": "locator.fill: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('input:not([type=\"password\"]):visible, input[type=\"email\"]:visible').last()\u001b[22m\n",
+        "durationMs": 35027
+      }
+    ],
+    "screenshotPath": "cmurczmzr000nb3k0posfslri\\cmun8b8yf000eb3n8vzprqf56-step-9.png"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "title": "View catalog after signing in",
+  "result": {
+    "status": "FAILED",
+    "error": "Step 2 (assert \"Products\") failed: locator.waitFor: Timeout 8000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByText('Products').first() to be visible\u001b[22m\n\u001b[2m    19 × locator resolved to hidden <a href=\"/\" id=\"nav-products\">Products</a>\u001b[22m\n",
+    "steps": [
+      {
+        "index": 0,
+        "action": "navigate",
+        "target": "/",
+        "status": "PASSED",
+        "durationMs": 15
+      },
+      {
+        "index": 1,
+        "action": "assert",
+        "target": "Products",
+        "status": "FAILED",
+        "error": "locator.waitFor: Timeout 8000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByText('Products').first() to be visible\u001b[22m\n\u001b[2m    19 × locator resolved to hidden <a href=\"/\" id=\"nav-products\">Products</a>\u001b[22m\n",
+        "durationMs": 8003
+      }
+    ],
+    "screenshotPath": "cmun5hopx000ib3dwlv02wa9p\\cmun5dwqd0007b3dwgovt6mvc-step-2.png"
+  }
+}

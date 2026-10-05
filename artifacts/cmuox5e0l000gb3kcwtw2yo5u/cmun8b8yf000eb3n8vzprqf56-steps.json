@@ -1,0 +1,32 @@
+{
+  "title": "Teamwear Custom Logo on Right Sleeve Flip",
+  "result": {
+    "status": "FAILED",
+    "error": "Step 3 (click \"decoration type Hyper Twill\") failed: No clickable element matching \"decoration type Hyper Twill\". Visible buttons/links on the page: Go Back | Previous | Next | VIEW SUMMARY. Last stage error: locator.click: Timeout 4000ms exceeded.",
+    "steps": [
+      {
+        "index": 0,
+        "action": "navigate",
+        "target": "/?projectId=193&modelCode=PTS8013CU",
+        "status": "PASSED",
+        "durationMs": 913
+      },
+      {
+        "index": 1,
+        "action": "click",
+        "target": "DECORATION",
+        "status": "PASSED",
+        "durationMs": 12096
+      },
+      {
+        "index": 2,
+        "action": "click",
+        "target": "decoration type Hyper Twill",
+        "status": "FAILED",
+        "error": "No clickable element matching \"decoration type Hyper Twill\". Visible buttons/links on the page: Go Back | Previous | Next | VIEW SUMMARY. Last stage error: locator.click: Timeout 4000ms exceeded.",
+        "durationMs": 16020
+      }
+    ],
+    "screenshotPath": "cmuox5e0l000gb3kcwtw2yo5u\\cmun8b8yf000eb3n8vzprqf56-step-3.png"
+  }
+}

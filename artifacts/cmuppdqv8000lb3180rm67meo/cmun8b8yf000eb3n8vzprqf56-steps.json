@@ -1,0 +1,53 @@
+{
+  "title": "Apply Upside Down Logo on Right Sleeve",
+  "result": {
+    "status": "FAILED",
+    "error": "Step 6 (select \"MY ART\") failed: Nothing selectable matching \"MY ART\". Visible buttons/links: Go Back | Decoration | Previous | Next | VIEW SUMMARY | Previous | VIEW SUMMARY | Next",
+    "steps": [
+      {
+        "index": 0,
+        "action": "navigate",
+        "target": "/?projectId=193&modelCode=PTS8013CU",
+        "status": "PASSED",
+        "durationMs": 7456
+      },
+      {
+        "index": 1,
+        "action": "click",
+        "target": "Decoration",
+        "status": "PASSED",
+        "durationMs": 8156
+      },
+      {
+        "index": 2,
+        "action": "select",
+        "target": "Hyper Twill",
+        "status": "PASSED",
+        "durationMs": 11632
+      },
+      {
+        "index": 3,
+        "action": "select",
+        "target": "RIGHT SLEEVE",
+        "status": "PASSED",
+        "durationMs": 3100
+      },
+      {
+        "index": 4,
+        "action": "select",
+        "target": "CUSTOM",
+        "status": "PASSED",
+        "durationMs": 3062
+      },
+      {
+        "index": 5,
+        "action": "select",
+        "target": "MY ART",
+        "status": "FAILED",
+        "error": "Nothing selectable matching \"MY ART\". Visible buttons/links: Go Back | Decoration | Previous | Next | VIEW SUMMARY | Previous | VIEW SUMMARY | Next",
+        "durationMs": 17035
+      }
+    ],
+    "screenshotPath": "cmuppdqv8000lb3180rm67meo\\cmun8b8yf000eb3n8vzprqf56-step-6.png"
+  }
+}

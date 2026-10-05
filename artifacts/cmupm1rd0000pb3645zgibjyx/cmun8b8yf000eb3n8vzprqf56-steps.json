@@ -1,0 +1,74 @@
+{
+  "title": "Logo Customization for Right Sleeve",
+  "result": {
+    "status": "FAILED",
+    "error": "Step 9 (click \"Next\") failed: No clickable element matching \"Next\". Visible buttons/links on the page: Go Back | Previous | Next | VIEW SUMMARY. Last stage error: locator.click: Timeout 4000ms exceeded.",
+    "steps": [
+      {
+        "index": 0,
+        "action": "navigate",
+        "target": "/?projectId=193&modelCode=PTS8013CU",
+        "status": "PASSED",
+        "durationMs": 4031
+      },
+      {
+        "index": 1,
+        "action": "click",
+        "target": "Next",
+        "status": "PASSED",
+        "durationMs": 8063
+      },
+      {
+        "index": 2,
+        "action": "click",
+        "target": "Next",
+        "status": "PASSED",
+        "durationMs": 77
+      },
+      {
+        "index": 3,
+        "action": "click",
+        "target": "Next",
+        "status": "PASSED",
+        "durationMs": 55
+      },
+      {
+        "index": 4,
+        "action": "click",
+        "target": "Next",
+        "status": "PASSED",
+        "durationMs": 80
+      },
+      {
+        "index": 5,
+        "action": "click",
+        "target": "HYPR TWILL",
+        "status": "PASSED",
+        "durationMs": 12095
+      },
+      {
+        "index": 6,
+        "action": "click",
+        "target": "RIGHT SLEEVE",
+        "status": "PASSED",
+        "durationMs": 12083
+      },
+      {
+        "index": 7,
+        "action": "click",
+        "target": "CUSTOM",
+        "status": "PASSED",
+        "durationMs": 12070
+      },
+      {
+        "index": 8,
+        "action": "click",
+        "target": "Next",
+        "status": "FAILED",
+        "error": "No clickable element matching \"Next\". Visible buttons/links on the page: Go Back | Previous | Next | VIEW SUMMARY. Last stage error: locator.click: Timeout 4000ms exceeded.",
+        "durationMs": 16058
+      }
+    ],
+    "screenshotPath": "cmupm1rd0000pb3645zgibjyx\\cmun8b8yf000eb3n8vzprqf56-step-9.png"
+  }
+}

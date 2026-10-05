@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Acme Storefront — Demo Target</title>
+<style>
+  :root { --ink:#172029; --mint:#1f7265; --gold:#e6c069; --line:#e4e8ee; }
+  * { box-sizing:border-box; } body { margin:0; font-family: Georgia, serif; color:var(--ink); background:#f5f6f4; }
+  header { background:var(--ink); color:#fff; padding:14px 26px; display:flex; align-items:center; gap:18px; }
+  header .brand { font-weight:700; letter-spacing:.5px; }
+  header nav a { color:#cfd8dc; margin-right:14px; text-decoration:none; font-size:14px; }
+  header nav a:hover { color:#fff; }
+  .cart-badge { margin-left:auto; background:var(--gold); color:var(--ink); border-radius:999px; padding:4px 12px; font-size:13px; font-weight:700; }
+  main { max-width:900px; margin:34px auto; padding:0 20px; }
+  h1 { font-size:28px; margin:0 0 6px; }
+  h2 { margin:0 0 12px; font-size:20px; }
+  .muted { color:#6f7b8b; font-size:14px; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:22px; }
+  .product { background:#fff; border:1px solid var(--line); border-radius:9px; padding:16px; }
+  .product h3 { margin:0 0 4px; font-size:16px; }
+  .price { color:var(--mint); font-weight:700; margin-bottom:10px; }
+  .buy { background:var(--mint); border:0; color:#fff; padding:8px 13px; border-radius:5px; cursor:pointer; font-size:13px; }
+  .buy:hover { background:#15594f; }
+  .panel { background:#fff; border:1px solid var(--line); border-radius:9px; padding:22px; margin-top:26px; }
+  label { display:grid; gap:5px; font-size:13px; font-weight:700; margin-bottom:12px; }
+  input, select { height:38px; border:1px solid var(--line); border-radius:5px; padding:0 10px; font-size:14px; }
+  .error { color:#a34431; font-size:13px; margin-top:8px; display:none; }
+  .success { color:#1f7265; font-size:13px; margin-top:8px; }
+  ul.cart { padding-left:18px; }
+  .login-panel { max-width:430px; margin:60px auto; }
+  .login-panel h2 { margin-bottom:6px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">Acme Storefront</span>
+  <nav>
+    <a href="/" id="nav-products" style="display:none">Products</a>
+    <a href="/" id="nav-account" onclick="showSection('account');return false;">Account</a>
+  </nav>
+  <span class="cart-badge" id="cart-badge">Cart: 0</span>
+</header>
+<main>
+  <section id="login-section">
+    <div class="panel login-panel">
+      <h2>Sign in</h2>
+      <p class="muted">Sign in to browse the catalog. (Demo accepts any credentials.)</p>
+      <form onsubmit="return doLogin(event)">
+        <label>Email<input id="login-email" type="text" placeholder="you@example.com" /></label>
+        <label>Password<input id="login-password" type="password" placeholder="Your password" /></label>
+        <button class="buy" type="submit">Sign in</button>
+      </form>
+      <p class="error" id="signin-error">Email and password are required.</p>
+    </div>
+  </section>
+  <section id="products-section" style="display:none">
+    <h1>Products</h1>
+    <p class="muted">Demo target application for Proofline executions.</p>
+    <div class="grid">
+      <div class="product"><h3>Classic Tee</h3><div class="price">$24.00</div><button class="buy" onclick="addToCart('Classic Tee')">Add to cart</button></div>
+      <div class="product"><h3>Denim Jacket</h3><div class="price">$89.00</div><button class="buy" onclick="addToCart('Denim Jacket')">Add to cart</button></div>
+      <div class="product"><h3>Running Shoes</h3><div class="price">$129.00</div><button class="buy" onclick="addToCart('Running Shoes')">Add to cart</button></div>
+    </div>
+    <div class="panel">
+      <h2 style="margin:0 0 10px;">Your cart</h2>
+      <ul class="cart" id="cart-list"><li>Your cart is empty.</li></ul>
+      <button class="buy" id="checkout" onclick="checkout()" style="margin-top:12px;">Checkout</button>
+      <p class="error" id="checkout-error">Your cart is empty — add a product first.</p>
+      <p class="success" id="checkout-success">Order placed! A confirmation email is on its way.</p>
+    </div>
+  </section>
+  <section id="account-section" style="display:none;">
+    <div class="panel">
+      <h2 style="margin:0 0 14px;">Account</h2>
+      <p class="success" style="display:block">Welcome back! You are signed in as <strong id="who">…</strong>.</p>
+    </div>
+  </section>
+</main>
+<script>
+  const cart = [];
+  function render() {
+    const loggedIn = localStorage.getItem('acmeUser') !== null;
+    document.getElementById('login-section').style.display = loggedIn ? 'none' : 'block';
+    document.getElementById('products-section').style.display = loggedIn ? 'block' : 'none';
+    document.getElementById('account-section').style.display = 'none';
+    document.getElementById('nav-products').style.display = loggedIn ? 'inline' : 'none';
+    document.getElementById('nav-account').style.display = loggedIn ? 'inline' : 'none';
+    if (loggedIn) document.getElementById('who').textContent = localStorage.getItem('acmeUser');
+  }
+  function doLogin(event) {
+    event.preventDefault();
+    const email = document.getElementById('login-email').value.trim();
+    const password = document.getElementById('login-password').value;
+    const error = document.getElementById('signin-error');
+    if (!email || !password) { error.style.display = 'block'; return false; }
+    error.style.display = 'none';
+    localStorage.setItem('acmeUser', email);
+    render();
+    return false;
+  }
+  function showSection(id) {
+    document.getElementById('products-section').style.display = id === 'account' ? 'none' : 'block';
+    document.getElementById('account-section').style.display = id === 'account' ? 'block' : 'none';
+  }
+  function addToCart(name) {
+    cart.push(name);
+    document.getElementById('cart-badge').textContent = 'Cart: ' + cart.length;
+    document.getElementById('checkout-success').style.display = 'none';
+    document.getElementById('checkout-error').style.display = 'none';
+    renderCart();
+  }
+  function renderCart() {
+    const list = document.getElementById('cart-list');
+    list.innerHTML = cart.length ? cart.map((item) => '<li>' + item + '</li>').join('') : '<li>Your cart is empty.</li>';
+  }
+  function checkout() {
+    const success = document.getElementById('checkout-success');
+    const error = document.getElementById('checkout-error');
+    if (cart.length === 0) { error.style.display = 'block'; success.style.display = 'none'; return; }
+    error.style.display = 'none';
+    success.style.display = 'block';
+    cart.length = 0;
+    document.getElementById('cart-badge').textContent = 'Cart: 0';
+    renderCart();
+  }
+  render();
+</script>
+</body>
+</html>

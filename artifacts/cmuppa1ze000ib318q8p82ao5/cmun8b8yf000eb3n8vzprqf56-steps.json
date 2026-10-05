@@ -1,0 +1,32 @@
+{
+  "title": "Apply Upside Down Logo on Right Sleeve",
+  "result": {
+    "status": "FAILED",
+    "error": "Step 3 (select \"Hyper Twill\") failed: Nothing selectable matching \"Hyper Twill\". Visible buttons/links: Go Back | Decoration | Previous | Next | VIEW SUMMARY | Previous | VIEW SUMMARY | Next",
+    "steps": [
+      {
+        "index": 0,
+        "action": "navigate",
+        "target": "/?projectId=193&modelCode=PTS8013CU",
+        "status": "PASSED",
+        "durationMs": 7465
+      },
+      {
+        "index": 1,
+        "action": "click",
+        "target": "Decoration",
+        "status": "PASSED",
+        "durationMs": 8096
+      },
+      {
+        "index": 2,
+        "action": "select",
+        "target": "Hyper Twill",
+        "status": "FAILED",
+        "error": "Nothing selectable matching \"Hyper Twill\". Visible buttons/links: Go Back | Decoration | Previous | Next | VIEW SUMMARY | Previous | VIEW SUMMARY | Next",
+        "durationMs": 17055
+      }
+    ],
+    "screenshotPath": "cmuppa1ze000ib318q8p82ao5\\cmun8b8yf000eb3n8vzprqf56-step-3.png"
+  }
+}

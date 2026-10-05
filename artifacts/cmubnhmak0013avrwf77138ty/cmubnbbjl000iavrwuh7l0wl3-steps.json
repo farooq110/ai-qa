@@ -1,0 +1,36 @@
+{
+  "title": "Sign in validates credentials",
+  "result": {
+    "status": "PASSED",
+    "steps": [
+      {
+        "index": 0,
+        "action": "navigate",
+        "target": "http://localhost:4600",
+        "status": "PASSED",
+        "durationMs": 23
+      },
+      {
+        "index": 1,
+        "action": "click",
+        "target": "Account",
+        "status": "PASSED",
+        "durationMs": 71
+      },
+      {
+        "index": 2,
+        "action": "click",
+        "target": "Sign in",
+        "status": "PASSED",
+        "durationMs": 45
+      },
+      {
+        "index": 3,
+        "action": "assert",
+        "target": "Email and password are required",
+        "status": "PASSED",
+        "durationMs": 9
+      }
+    ]
+  }
+}

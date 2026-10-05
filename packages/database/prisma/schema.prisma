@@ -1,0 +1,416 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrganizationRole {
+  ADMIN
+  QA
+  DEVELOPER
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAYMENT_WARNING
+  PAST_DUE
+  BILLING_LOCKED
+  CANCELED
+  EXPIRED
+}
+
+enum TestStatus {
+  PENDING_REVIEW
+  APPROVED
+  NEEDS_REVIEW
+  REJECTED
+  ARCHIVED
+}
+
+enum TestPriority {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum ExecutionStatus {
+  QUEUED
+  RUNNING
+  PASSED
+  FAILED
+  BLOCKED
+  CANCELED
+}
+
+enum ExecutionItemStatus {
+  QUEUED
+  RUNNING
+  PASSED
+  FAILED
+  BLOCKED
+  SKIPPED
+}
+
+enum GenerationMode {
+  INCREMENTAL
+  FULL
+}
+
+enum GenerationStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELED
+}
+
+enum AnalysisStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum RepositoryProvider {
+  GITHUB
+  BITBUCKET
+  GITLAB
+}
+
+enum ArtifactKind {
+  SCREENSHOT
+  TRACE
+  LOG
+}
+
+enum CiProviderName {
+  GITHUB_ACTIONS
+  GITLAB_CI
+  BITBUCKET_PIPELINES
+}
+
+model User {
+  id             String                  @id @default(cuid())
+  email          String                  @unique
+  displayName    String
+  passwordHash   String
+  isSuperadmin   Boolean                 @default(false)
+  membership     OrganizationMembership?
+  createdAt      DateTime                @default(now())
+}
+
+model Organization {
+  id                    String                  @id @default(cuid())
+  name                  String
+  industry              String?
+  organizationSize      String?
+  country               String?
+  memberships           OrganizationMembership[]
+  projects              Project[]
+  subscription          Subscription?
+  modules               TestModule[]
+  tags                  TestTag[]
+  repositoryConnections RepositoryConnection[]
+  createdAt             DateTime                @default(now())
+}
+
+model RepositoryConnection {
+  id                    String             @id @default(cuid())
+  organizationId        String
+  provider              RepositoryProvider
+  externalAccountId     String
+  accountLogin          String
+  accessTokenCiphertext String
+  accessTokenIv         String
+  accessTokenTag        String
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+  organization          Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  @@unique([organizationId, provider, externalAccountId])
+}
+
+model OrganizationMembership {
+  id             String           @id @default(cuid())
+  organizationId String
+  userId         String           @unique
+  role           OrganizationRole @default(ADMIN)
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PricingPlan {
+  id                    String  @id @default(cuid())
+  key                   String  @unique
+  name                  String
+  monthlyPriceUsd       Int     @default(0)
+  tokenQuotaMonthly     Int     @default(1000000)
+  warningThresholdPct   Int     @default(80)
+  executionSlotLimit    Int     @default(5)
+  retentionDays         Int     @default(30)
+  isActive              Boolean @default(true)
+  subscriptions         Subscription[]
+}
+
+model Subscription {
+  id                   String             @id @default(cuid())
+  organizationId       String             @unique
+  stripeCustomerId     String             @unique
+  stripeSubscriptionId String?            @unique
+  planId               String?
+  status               SubscriptionStatus @default(TRIALING)
+  currentPeriodEnd     DateTime?
+  organization         Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  plan                 PricingPlan?       @relation(fields: [planId], references: [id], onDelete: SetNull)
+}
+
+model AiUsageRecord {
+  id               String        @id @default(cuid())
+  organizationId   String
+  projectId        String?
+  generationRunId  String?
+  provider         String
+  model            String
+  inputTokens      Int           @default(0)
+  outputTokens     Int           @default(0)
+  cachedTokens     Int           @default(0)
+  estimatedCostUsd Float         @default(0)
+  createdAt        DateTime      @default(now())
+}
+
+model AiProviderConfig {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  baseUrl     String
+  model       String
+  apiKeyCiphertext String?
+  apiKeyIv    String?
+  apiKeyTag   String?
+  enabled     Boolean @default(true)
+  isPrimary   Boolean @default(false)
+  isFallback  Boolean @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Project {
+  id             String      @id @default(cuid())
+  organizationId String
+  name           String
+  repositoryUrl  String
+  defaultBranch  String      @default("main")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  tests          TestCase[]
+  analysisRuns   AnalysisRun[]
+  executionPlans ExecutionPlan[]
+  generationRuns GenerationRun[]
+  environments   EnvironmentProfile[]
+  ciConnections  CiConnection[]
+  createdAt      DateTime    @default(now())
+}
+
+model EnvironmentProfile {
+  id               String  @id @default(cuid())
+  projectId        String
+  name             String
+  url              String
+  isDefault        Boolean @default(false)
+  // Optional authenticated-access configuration (secrets stored AES-256-GCM encrypted)
+  loginUrl         String?
+  loginTriggerSelector String?
+  usernameSelector String?
+  passwordSelector String?
+  submitSelector   String?
+  usernameEnc      String?
+  usernameIv       String?
+  usernameTag      String?
+  passwordEnc      String?
+  passwordIv       String?
+  passwordTag      String?
+  project          Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  @@unique([projectId, name])
+}
+
+model AnalysisRun {
+  id             String         @id @default(cuid())
+  organizationId String
+  projectId      String
+  branch         String
+  commitSha      String
+  status         AnalysisStatus @default(QUEUED)
+  knowledgeModel Json?
+  errorMessage   String?
+  project        Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdAt      DateTime       @default(now())
+  completedAt    DateTime?
+}
+
+model TestCase {
+  id             String      @id @default(cuid())
+  projectId      String
+  title          String
+  status         TestStatus  @default(PENDING_REVIEW)
+  source         String
+  definition     Json?
+  capability     String?
+  category       String?
+  priority       TestPriority @default(MEDIUM)
+  confidence     Float?
+  route          String?
+  version        Int         @default(1)
+  generatedFromCommit String?
+  lastValidatedCommit String?
+  project        Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  versions       TestCaseVersion[]
+  modules        TestModuleMembership[]
+  tags           TestTagAssignment[]
+  executionItems ExecutionPlanItem[]
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @default(now()) @updatedAt
+}
+
+model TestCaseVersion {
+  id          String    @id @default(cuid())
+  testCaseId  String
+  version     Int
+  title       String
+  definition  Json?
+  note        String?
+  testCase    TestCase  @relation(fields: [testCaseId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+  @@unique([testCaseId, version])
+}
+
+model GenerationRun {
+  id             String           @id @default(cuid())
+  organizationId String
+  projectId      String
+  baseCommit     String?
+  targetCommit   String
+  mode           GenerationMode
+  status         GenerationStatus @default(QUEUED)
+  estimatedTokens Int?
+  consumedTokens  Int?
+  created         Int?
+  duplicatesSkipped Int?
+  errorMessage   String?
+  project        Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdAt      DateTime         @default(now())
+  completedAt    DateTime?
+}
+
+model ExecutionPlan {
+  id             String          @id @default(cuid())
+  organizationId String
+  projectId      String
+  branch         String
+  commitSha      String?
+  environmentUrl String
+  trigger        String
+  status         ExecutionStatus @default(QUEUED)
+  startedAt      DateTime?
+  completedAt    DateTime?
+  project        Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  items          ExecutionPlanItem[]
+  artifacts      Artifact[]
+  createdAt      DateTime        @default(now())
+}
+
+model ExecutionPlanItem {
+  executionPlanId String
+  testCaseId      String
+  status          ExecutionItemStatus @default(QUEUED)
+  errorMessage    String?
+  durationMs      Int?
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  executionPlan   ExecutionPlan @relation(fields: [executionPlanId], references: [id], onDelete: Cascade)
+  testCase        TestCase      @relation(fields: [testCaseId], references: [id], onDelete: Restrict)
+  @@id([executionPlanId, testCaseId])
+}
+
+model Artifact {
+  id              String       @id @default(cuid())
+  executionPlanId String
+  testCaseId      String?
+  kind            ArtifactKind
+  path            String
+  contentType     String       @default("image/png")
+  executionPlan   ExecutionPlan @relation(fields: [executionPlanId], references: [id], onDelete: Cascade)
+  createdAt       DateTime     @default(now())
+}
+
+model AuditEvent {
+  id             String   @id @default(cuid())
+  organizationId String?
+  actorId        String?
+  actorEmail     String?
+  action         String
+  targetType     String?
+  targetId       String?
+  metadata       Json?
+  scope          String   @default("ORGANIZATION")
+  createdAt      DateTime @default(now())
+}
+
+model CiConnection {
+  id         String          @id @default(cuid())
+  projectId  String
+  provider   CiProviderName
+  label      String          @default("Default")
+  tokenHash  String          @unique
+  tokenHint  String
+  lastUsedAt DateTime?
+  createdAt  DateTime        @default(now())
+  project    Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+model CiExecutionRequest {
+  id              String   @id @default(cuid())
+  projectId       String
+  executionPlanId String?
+  provider        String
+  branch          String
+  commitSha       String
+  pipelineId      String?
+  status          String   @default("ACCEPTED")
+  createdAt       DateTime @default(now())
+}
+
+model TestModule {
+  id             String      @id @default(cuid())
+  organizationId String
+  name           String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  memberships    TestModuleMembership[]
+  @@unique([organizationId, name])
+}
+
+model TestModuleMembership {
+  moduleId       String
+  testCaseId     String
+  module         TestModule  @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  testCase       TestCase    @relation(fields: [testCaseId], references: [id], onDelete: Cascade)
+  @@id([moduleId, testCaseId])
+}
+
+model TestTag {
+  id             String      @id @default(cuid())
+  organizationId String
+  name           String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assignments    TestTagAssignment[]
+  @@unique([organizationId, name])
+}
+
+model TestTagAssignment {
+  tagId          String
+  testCaseId     String
+  tag            TestTag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  testCase       TestCase    @relation(fields: [testCaseId], references: [id], onDelete: Cascade)
+  @@id([tagId, testCaseId])
+}

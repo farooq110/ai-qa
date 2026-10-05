@@ -1,0 +1,88 @@
+{
+  "title": "Apply Upside Down Logo on Right Sleeve",
+  "result": {
+    "status": "FAILED",
+    "error": "Step 11 (click \"FLIP\") failed: No clickable element matching \"FLIP\". Visible buttons/links on the page: Go Back | Left | Up | Down | Right | Properties | Layers | Save | Sort by | Edit | Apply | Choose Best Fit. Last stage error: locator.click: Timeout 4000ms exceeded.",
+    "steps": [
+      {
+        "index": 0,
+        "action": "navigate",
+        "target": "/?projectId=193&modelCode=PTS8013CU",
+        "status": "PASSED",
+        "durationMs": 2259
+      },
+      {
+        "index": 1,
+        "action": "click",
+        "target": "Next",
+        "status": "PASSED",
+        "durationMs": 3268
+      },
+      {
+        "index": 2,
+        "action": "click",
+        "target": "Next",
+        "status": "PASSED",
+        "durationMs": 44
+      },
+      {
+        "index": 3,
+        "action": "click",
+        "target": "Next",
+        "status": "PASSED",
+        "durationMs": 46
+      },
+      {
+        "index": 4,
+        "action": "click",
+        "target": "Next",
+        "status": "PASSED",
+        "durationMs": 47
+      },
+      {
+        "index": 5,
+        "action": "click",
+        "target": "HYPR TWILL",
+        "status": "PASSED",
+        "durationMs": 12097
+      },
+      {
+        "index": 6,
+        "action": "click",
+        "target": "RIGHT SLEEVE",
+        "status": "PASSED",
+        "durationMs": 12058
+      },
+      {
+        "index": 7,
+        "action": "click",
+        "target": "CUSTOM",
+        "status": "PASSED",
+        "durationMs": 12082
+      },
+      {
+        "index": 8,
+        "action": "click",
+        "target": "MY ART",
+        "status": "PASSED",
+        "durationMs": 12187
+      },
+      {
+        "index": 9,
+        "action": "click",
+        "target": "APPLY",
+        "status": "PASSED",
+        "durationMs": 40117
+      },
+      {
+        "index": 10,
+        "action": "click",
+        "target": "FLIP",
+        "status": "FAILED",
+        "error": "No clickable element matching \"FLIP\". Visible buttons/links on the page: Go Back | Left | Up | Down | Right | Properties | Layers | Save | Sort by | Edit | Apply | Choose Best Fit. Last stage error: locator.click: Timeout 4000ms exceeded.",
+        "durationMs": 48566
+      }
+    ],
+    "screenshotPath": "cmurd6umh000ub3k0dbe5s7zs\\cmun8b8yf000eb3n8vzprqf56-step-11.png"
+  }
+}

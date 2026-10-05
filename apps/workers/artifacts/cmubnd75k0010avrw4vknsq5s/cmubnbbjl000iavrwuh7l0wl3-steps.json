@@ -1,0 +1,39 @@
+{
+  "title": "Sign in validates credentials",
+  "result": {
+    "status": "FAILED",
+    "error": "Step 4 (assert \"Email and password are required\") failed: locator.waitFor: Timeout 8000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByText('Email and password are required').first() to be visible\u001b[22m\n\u001b[2m    20 × locator resolved to hidden <p class=\"error\" id=\"signin-error\">Email and password are required.</p>\u001b[22m\n",
+    "steps": [
+      {
+        "index": 0,
+        "action": "navigate",
+        "target": "http://localhost:4600",
+        "status": "PASSED",
+        "durationMs": 18
+      },
+      {
+        "index": 1,
+        "action": "click",
+        "target": "Account",
+        "status": "PASSED",
+        "durationMs": 73
+      },
+      {
+        "index": 2,
+        "action": "click",
+        "target": "Sign in",
+        "status": "PASSED",
+        "durationMs": 43
+      },
+      {
+        "index": 3,
+        "action": "assert",
+        "target": "Email and password are required",
+        "status": "FAILED",
+        "error": "locator.waitFor: Timeout 8000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByText('Email and password are required').first() to be visible\u001b[22m\n\u001b[2m    20 × locator resolved to hidden <p class=\"error\" id=\"signin-error\">Email and password are required.</p>\u001b[22m\n",
+        "durationMs": 8004
+      }
+    ],
+    "screenshotPath": "cmubnd75k0010avrw4vknsq5s\\cmubnbbjl000iavrwuh7l0wl3-step-4.png"
+  }
+}

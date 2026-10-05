@@ -1,0 +1,18 @@
+{
+  "title": "Logo Customization for Right Sleeve",
+  "result": {
+    "status": "FAILED",
+    "error": "Step 1 (click \"Decoration\") failed: No clickable element matching \"Decoration\". Visible buttons/links on the page: (none). Last stage error: locator.click: Timeout 4000ms exceeded.",
+    "steps": [
+      {
+        "index": 0,
+        "action": "click",
+        "target": "Decoration",
+        "status": "FAILED",
+        "error": "No clickable element matching \"Decoration\". Visible buttons/links on the page: (none). Last stage error: locator.click: Timeout 4000ms exceeded.",
+        "durationMs": 16042
+      }
+    ],
+    "screenshotPath": "cmupl2c62000db364s4lt8l5x\\cmun8b8yf000eb3n8vzprqf56-step-1.png"
+  }
+}

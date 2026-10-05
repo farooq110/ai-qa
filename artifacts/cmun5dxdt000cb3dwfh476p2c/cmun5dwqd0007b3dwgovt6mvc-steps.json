@@ -1,0 +1,18 @@
+{
+  "title": "View catalog after signing in",
+  "result": {
+    "status": "FAILED",
+    "error": "Step 1 (navigate \"/\") failed: page.goto: net::ERR_CONNECTION_REFUSED at http://localhost:4600/\nCall log:\n\u001b[2m  - navigating to \"http://localhost:4600/\", waiting until \"domcontentloaded\"\u001b[22m\n",
+    "steps": [
+      {
+        "index": 0,
+        "action": "navigate",
+        "target": "/",
+        "status": "FAILED",
+        "error": "page.goto: net::ERR_CONNECTION_REFUSED at http://localhost:4600/\nCall log:\n\u001b[2m  - navigating to \"http://localhost:4600/\", waiting until \"domcontentloaded\"\u001b[22m\n",
+        "durationMs": 15
+      }
+    ],
+    "screenshotPath": "cmun5dxdt000cb3dwfh476p2c\\cmun5dwqd0007b3dwgovt6mvc-step-1.png"
+  }
+}

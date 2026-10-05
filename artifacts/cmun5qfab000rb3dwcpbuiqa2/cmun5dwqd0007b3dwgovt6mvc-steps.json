@@ -1,0 +1,22 @@
+{
+  "title": "View catalog after signing in",
+  "result": {
+    "status": "PASSED",
+    "steps": [
+      {
+        "index": 0,
+        "action": "navigate",
+        "target": "/",
+        "status": "PASSED",
+        "durationMs": 15
+      },
+      {
+        "index": 1,
+        "action": "assert",
+        "target": "Products",
+        "status": "PASSED",
+        "durationMs": 26
+      }
+    ]
+  }
+}

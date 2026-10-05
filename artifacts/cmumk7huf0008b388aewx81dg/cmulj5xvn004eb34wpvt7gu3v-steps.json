@@ -1,0 +1,25 @@
+{
+  "title": "Handle server error during file upload",
+  "result": {
+    "status": "FAILED",
+    "error": "Step 2 (upload \"input[type='file']\") failed: ENOENT: no such file or directory, open 'C:\\Users\\MuhammadNafees\\OneDrive - Royal Cyber Inc\\Documents\\test\\app\\artifacts\\.upload-fixtures\\path\\to\\file.txt'",
+    "steps": [
+      {
+        "index": 0,
+        "action": "navigate",
+        "target": "/uploads",
+        "status": "PASSED",
+        "durationMs": 980
+      },
+      {
+        "index": 1,
+        "action": "upload",
+        "target": "input[type='file']",
+        "status": "FAILED",
+        "error": "ENOENT: no such file or directory, open 'C:\\Users\\MuhammadNafees\\OneDrive - Royal Cyber Inc\\Documents\\test\\app\\artifacts\\.upload-fixtures\\path\\to\\file.txt'",
+        "durationMs": 0
+      }
+    ],
+    "screenshotPath": "cmumk7huf0008b388aewx81dg\\cmulj5xvn004eb34wpvt7gu3v-step-2.png"
+  }
+}

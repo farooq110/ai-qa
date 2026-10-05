@@ -1,0 +1,19 @@
+{
+  "steps": [
+    { "action": "navigate", "target": "/?projectId=193&modelCode=PTS8013CU" },
+    { "action": "click", "target": "Next" },
+    { "action": "click", "target": "Next" },
+    { "action": "click", "target": "Next" },
+    { "action": "click", "target": "Next" },
+    { "action": "click", "target": "HYPR TWILL" },
+    { "action": "click", "target": "RIGHT SLEEVE" },
+    { "action": "click", "target": "CUSTOM" },
+    { "action": "click", "target": "MY ART" },
+    { "action": "click", "target": "flag" },
+    { "action": "click", "target": "APPLY" },
+    { "action": "screenshot", "target": "before-flip" },
+    { "action": "click", "target": "css:div.my-\\[24\\.5px\\] > div.flex > *:nth-child(2)" },
+    { "action": "assert", "condition": "visual", "target": "The decoration on the jersey in the LAST image is flipped vertically (rotated 180 degrees) compared to the same decoration in the REFERENCE image", "value": "before-flip" },
+    { "action": "assert", "condition": "visible", "target": "RIGHT SLEEVE DECORATION" }
+  ]
+}

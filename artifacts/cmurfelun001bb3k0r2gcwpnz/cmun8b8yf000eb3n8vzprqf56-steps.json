@@ -1,0 +1,102 @@
+{
+  "title": "Apply Upside Down Logo on Right Sleeve",
+  "result": {
+    "status": "FAILED",
+    "error": "Step 13 (assert \"The flag logo on the right sleeve of the jersey is upside down (rotated 180 degrees, i.e. flipped vertically)\") failed: Visual check failed: The flag logo on the right sleeve of the jersey is not upside down.",
+    "steps": [
+      {
+        "index": 0,
+        "action": "navigate",
+        "target": "/?projectId=193&modelCode=PTS8013CU",
+        "status": "PASSED",
+        "durationMs": 2206
+      },
+      {
+        "index": 1,
+        "action": "click",
+        "target": "Next",
+        "status": "PASSED",
+        "durationMs": 3283
+      },
+      {
+        "index": 2,
+        "action": "click",
+        "target": "Next",
+        "status": "PASSED",
+        "durationMs": 41
+      },
+      {
+        "index": 3,
+        "action": "click",
+        "target": "Next",
+        "status": "PASSED",
+        "durationMs": 60
+      },
+      {
+        "index": 4,
+        "action": "click",
+        "target": "Next",
+        "status": "PASSED",
+        "durationMs": 77
+      },
+      {
+        "index": 5,
+        "action": "click",
+        "target": "HYPR TWILL",
+        "status": "PASSED",
+        "durationMs": 12073
+      },
+      {
+        "index": 6,
+        "action": "click",
+        "target": "RIGHT SLEEVE",
+        "status": "PASSED",
+        "durationMs": 12079
+      },
+      {
+        "index": 7,
+        "action": "click",
+        "target": "CUSTOM",
+        "status": "PASSED",
+        "durationMs": 12094
+      },
+      {
+        "index": 8,
+        "action": "click",
+        "target": "MY ART",
+        "status": "PASSED",
+        "durationMs": 12202
+      },
+      {
+        "index": 9,
+        "action": "click",
+        "target": "flag",
+        "status": "PASSED",
+        "durationMs": 8111
+      },
+      {
+        "index": 10,
+        "action": "click",
+        "target": "APPLY",
+        "status": "PASSED",
+        "durationMs": 12068
+      },
+      {
+        "index": 11,
+        "action": "click",
+        "target": "css:div.my-\\[24\\.5px\\] > div.flex > *:nth-child(2)",
+        "status": "PASSED",
+        "durationMs": 1420
+      },
+      {
+        "index": 12,
+        "action": "assert",
+        "target": "The flag logo on the right sleeve of the jersey is upside down (rotated 180 degrees, i.e. flipped vertically)",
+        "status": "FAILED",
+        "error": "Visual check failed: The flag logo on the right sleeve of the jersey is not upside down.",
+        "durationMs": 4974
+      }
+    ],
+    "screenshotPath": "cmurfelun001bb3k0r2gcwpnz\\cmun8b8yf000eb3n8vzprqf56-step-13.png"
+  }
+}

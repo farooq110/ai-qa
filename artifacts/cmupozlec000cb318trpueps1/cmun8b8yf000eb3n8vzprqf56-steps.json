@@ -1,0 +1,25 @@
+{
+  "title": "Apply Upside Down Logo on Right Sleeve",
+  "result": {
+    "status": "FAILED",
+    "error": "Step 2 (click \"Decoration\") failed: No clickable element matching \"Decoration\". Visible buttons/links on the page: (none). Last stage error: locator.click: Timeout 4000ms exceeded.",
+    "steps": [
+      {
+        "index": 0,
+        "action": "navigate",
+        "target": "/customizer/",
+        "status": "PASSED",
+        "durationMs": 21580
+      },
+      {
+        "index": 1,
+        "action": "click",
+        "target": "Decoration",
+        "status": "FAILED",
+        "error": "No clickable element matching \"Decoration\". Visible buttons/links on the page: (none). Last stage error: locator.click: Timeout 4000ms exceeded.",
+        "durationMs": 28180
+      }
+    ],
+    "screenshotPath": "cmupozlec000cb318trpueps1\\cmun8b8yf000eb3n8vzprqf56-step-2.png"
+  }
+}
