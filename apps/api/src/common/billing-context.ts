@@ -44,6 +44,7 @@ export async function subscriptionContext(prisma: PrismaService, organizationId:
 }
 
 export function assertBillingActive(context: SubscriptionContext, action: string) {
+  if (context.status === "INCOMPLETE") throw new ForbiddenException(`${action} is blocked until you choose a plan and start your trial in Billing`);
   if (context.billingLocked) throw new ForbiddenException(`${action} is blocked because the organization billing is ${context.status.toLowerCase().replace("_", " ")}`);
 }
 

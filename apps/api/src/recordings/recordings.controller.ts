@@ -18,6 +18,10 @@ export class RecordingsController {
     return this.recordingsService.events(user, projectId, sessionId);
   }
 
+  @Get(":sessionId/screenshot") screenshot(@CurrentUser() user: AuthenticatedUser, @Param("projectId") projectId: string, @Param("sessionId") sessionId: string) {
+    return this.recordingsService.screenshot(user, projectId, sessionId);
+  }
+
   @Post(":sessionId/stop") stop(@CurrentUser() user: AuthenticatedUser, @Param("projectId") projectId: string, @Param("sessionId") sessionId: string) {
     return this.recordingsService.stop(user.organizationId, projectId, sessionId);
   }

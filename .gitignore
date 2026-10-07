@@ -6,4 +6,14 @@ coverage/
 .env
 .env.*
 !.env.example
-*.logartifacts/
+*.log
+artifacts/
+PRODUCT.md
+graphify-out
+/scripts/*
+!/scripts/deploy.sh
+apps/landing/.impeccable
+apps/landing/DESIGN.md
+
+# local deploy keys — never commit (root deploy/ only; infrastructure/deploy/ IS tracked)
+/deploy/

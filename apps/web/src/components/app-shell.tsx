@@ -2,17 +2,18 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { Activity, FolderKanban, GitBranch, LayoutDashboard, LogOut, Settings, TestTube2, Users } from "lucide-react";
+import { Activity, CreditCard, FolderKanban, GitBranch, LayoutDashboard, LogOut, Settings, TestTube2, Users } from "lucide-react";
 import { apiToken } from "@/lib/api";
 import { useMe } from "@/lib/hooks";
 
 const navigation = [
-  [LayoutDashboard, "Overview", "/"],
+  [LayoutDashboard, "Overview", "/dashboard"],
   [FolderKanban, "Projects", "/projects"],
   [TestTube2, "Test cases", "/test-cases"],
   [Activity, "Executions", "/executions"],
   [GitBranch, "CI / CD", "/ci-cd"],
-  [Users, "Team", "/team"]
+  [Users, "Team", "/team"],
+  [CreditCard, "Billing", "/billing"]
 ] as const;
 
 export function AppShell({ children, activePath }: { children: React.ReactNode; activePath: string }) {
@@ -24,6 +25,11 @@ export function AppShell({ children, activePath }: { children: React.ReactNode; 
     apiToken.clear();
     window.location.assign("/signin");
   }
+
+  // Signed up but never completed Checkout: the only usable page is Billing.
+  useEffect(() => {
+    if (me?.organization?.subscription?.status === "INCOMPLETE" && activePath !== "/billing") window.location.assign("/billing");
+  }, [me, activePath]);
 
   const initials = me ? me.displayName.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase() : "…";
 

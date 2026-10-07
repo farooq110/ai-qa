@@ -18,9 +18,10 @@ import { OverviewModule } from "./overview/overview.module";
 import { ArtifactsModule } from "./artifacts/artifacts.module";
 import { RecordingsModule } from "./recordings/recordings.module";
 import { CommonModule } from "./common/common.module";
+import { SupportQueriesModule } from "./support-queries/support-queries.module";
 
 @Module({
-	imports: [ConfigModule.forRoot({ isGlobal: true }), CommonModule, AuthModule, ProjectsModule, TestCasesModule, ExecutionsModule, ClassificationsModule, GenerationsModule, RepositoryConnectionsModule, AnalysisModule, TeamModule, EnvironmentsModule, BillingModule, CiModule, AdminModule, OverviewModule, ArtifactsModule, RecordingsModule],
+	imports: [ConfigModule.forRoot({ isGlobal: true, envFilePath: ["../../.env", ".env"] }), CommonModule, AuthModule, ProjectsModule, TestCasesModule, ExecutionsModule, ClassificationsModule, GenerationsModule, RepositoryConnectionsModule, AnalysisModule, TeamModule, EnvironmentsModule, BillingModule, CiModule, AdminModule, OverviewModule, ArtifactsModule, RecordingsModule, SupportQueriesModule],
 	controllers: [HealthController]
 })
 export class AppModule {}

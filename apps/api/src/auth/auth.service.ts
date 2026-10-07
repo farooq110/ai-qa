@@ -17,7 +17,6 @@ export class AuthService {
     if (existing) throw new ConflictException("An account with this email already exists");
 
     const passwordHash = await bcrypt.hash(input.password, 12);
-    const trialPlan = await this.prisma.pricingPlan.findUnique({ where: { key: "trial" } });
     const user = await this.prisma.user.create({
       data: {
         email,
@@ -32,7 +31,7 @@ export class AuthService {
                 industry: input.industry?.trim() || undefined,
                 organizationSize: input.organizationSize?.trim() || undefined,
                 country: input.country?.trim() || undefined,
-                subscription: { create: { stripeCustomerId: `pending_${Date.now()}`, planId: trialPlan?.id, status: "TRIALING" } }
+                subscription: { create: { status: "INCOMPLETE" } }
               }
             }
           }
@@ -41,16 +40,10 @@ export class AuthService {
       include: { membership: { include: { organization: true } } }
     });
 
-    if (user.membership) {
-      await this.prisma.subscription.updateMany({ where: { organizationId: user.membership.organizationId, stripeCustomerId: { startsWith: "pending_" } }, data: { stripeCustomerId: `local_${user.membership.organizationId}` } });
-    }
-
     return this.issueSession(user.id, user.membership!.organizationId, user.membership!.role, user.membership!.organization.name, user.isSuperadmin);
   }
 
   async signIn(input: SignInInput) {
-    const emails = await this.prisma.user.findMany();
-    console.log("Existing emails in the database:", emails.map(user => user.email));
     const user = await this.prisma.user.findUnique({ where: { email: input.email.trim().toLowerCase() }, include: { membership: { include: { organization: true } } } });
     if (!user || !(await bcrypt.compare(input.password, user.passwordHash))) throw new UnauthorizedException("Invalid email or password");
     if (!user.isSuperadmin && !user.membership) throw new UnauthorizedException("This account has no organization membership");

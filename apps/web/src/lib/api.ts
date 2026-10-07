@@ -68,6 +68,7 @@ export const statusLabels: Record<string, string> = {
   CANCELED: "Canceled",
   SKIPPED: "Skipped",
   COMPLETED: "Completed",
+  INCOMPLETE: "No plan",
   TRIALING: "Trialing",
   ACTIVE: "Active",
   PAYMENT_WARNING: "Payment warning",

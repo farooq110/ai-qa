@@ -124,6 +124,13 @@ export class RecordingsService implements OnModuleDestroy {
     return { events: session.events, count: session.events.length };
   }
 
+  /** Live screenshot of the recorded page (base64 PNG) — used by the region picker. */
+  async screenshot(user: AuthenticatedUser, projectId: string, sessionId: string) {
+    const session = await this.assertSessionAccess(user, projectId, sessionId);
+    const buffer = await session.page.screenshot({ type: "png", timeout: 15000 });
+    return { image: `data:image/png;base64,${buffer.toString("base64")}`, url: session.page.url() };
+  }
+
   async stop(organizationId: string, projectId: string, sessionId: string) {
     const session = await this.assertSessionAccess({ organizationId } as AuthenticatedUser, projectId, sessionId);
     clearTimeout(session.autoStop);

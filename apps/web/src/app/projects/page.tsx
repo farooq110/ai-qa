@@ -1,14 +1,15 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import { Bot, Check, ChevronDown, Clock3, FolderGit2, Github, Gitlab, Plus, Search, SearchCode, TestTube2, Trash2, X } from "lucide-react";
-import { BitbucketIcon } from "@/components/brand-icons";
+import { Bot, Check, ChevronDown, Clock3, FolderGit2,   Plus, Search, SearchCode, TestTube2, Trash2, X } from "lucide-react";
+import { BitbucketIcon, GithubIcon, GitlabIcon } from "@/components/brand-icons";
 import { AppShell } from "@/components/app-shell";
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 type Provider = "all" | "github" | "bitbucket" | "gitlab";
 const providerLabels: Record<Exclude<Provider, "all">, string> = { github: "GitHub", bitbucket: "Bitbucket", gitlab: "GitLab" };
 interface Project { id: string; name: string; repositoryUrl: string; defaultBranch: string; }
+interface ConnectionDto { id: string; provider: string; }
 interface AnalysisRun { branch: string; status: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED"; completedAt: string | null; }
 interface GenerationRunDto { id: string; mode: string; status: string; created: number | null; duplicatesSkipped: number | null; errorMessage: string | null; createdAt: string; completedAt: string | null; }
 
@@ -28,9 +29,20 @@ export default function ProjectsPage() {
   const [analysisByProject, setAnalysisByProject] = useState<Record<string, AnalysisRun[]>>({});
   const [genByProject, setGenByProject] = useState<Record<string, GenerationRunDto>>({});
   const [counts, setCounts] = useState<Record<string, number>>({});
+  const [connectedProviders, setConnectedProviders] = useState<string[]>([]);
   const prevGenStatus = useRef<Record<string, string>>({});
   const STALE_MS = 15 * 60 * 1000;
   const token = typeof window === "undefined" ? null : window.localStorage.getItem("proofline.accessToken");
+
+  // Buttons are gated on the organization's connected accounts (Settings →
+  // Connected accounts), not on the repository's provider alone.
+  useEffect(() => {
+    if (!token) return;
+    fetch(`${apiUrl}/v1/repository-connections`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((response) => response.ok ? response.json() as Promise<ConnectionDto[]> : Promise.reject())
+      .then((connections) => setConnectedProviders(connections.map((connection) => connection.provider.toLowerCase())))
+      .catch(() => undefined);
+  }, [token]);
 
   useEffect(() => {
     if (!token) { window.location.assign("/signin"); return; }
@@ -125,7 +137,7 @@ export default function ProjectsPage() {
     const result = await response.json() as { message?: string; commitSha?: string };
     setBusyId(null);
     if (response.ok) setAnalysisByProject((current) => ({ ...current, [project.id]: [{ branch: project.defaultBranch, status: "COMPLETED", completedAt: new Date().toISOString() }] }));
-    setMessage(response.ok ? `Analysis completed at ${result.commitSha?.slice(0, 8) ?? "the selected commit"}. You can now generate tests.` : result.message ?? "Analysis failed. Ensure the repository is connected through GitHub.");
+    setMessage(response.ok ? `Analysis completed at ${result.commitSha?.slice(0, 8) ?? "the selected commit"}. You can now generate tests.` : result.message ?? "Analysis failed. Ensure the repository provider is connected in Settings.");
   }
 
   async function generate(project: Project) {
@@ -160,18 +172,18 @@ export default function ProjectsPage() {
     <section className="project-stats" aria-label="Project statistics">
       <Stat icon={<FolderGit2 />} label="Connected repos" value={projects.length} tone="emerald" />
       <Stat icon={<TestTube2 />} label="Total test cases" value={testCount ?? "-"} tone="teal" />
-      <Stat icon={<Github />} label="GitHub repos" value={githubCount} tone="slate" />
+      <Stat icon={<GithubIcon />} label="GitHub repos" value={githubCount} tone="slate" />
       <Stat icon={<BitbucketIcon />} label="Bitbucket repos" value={bitbucketCount} tone="blue" />
-      <Stat icon={<Gitlab />} label="GitLab repos" value={gitlabCount} tone="coral" />
+      <Stat icon={<GitlabIcon />} label="GitLab repos" value={gitlabCount} tone="coral" />
     </section>
 
     <section className="project-toolbar">
       <label className="project-search"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search by repo name or URL..." /></label>
-      <div className="provider-filter"><span>Provider:</span><div>{(["all", "github", "bitbucket", "gitlab"] as Provider[]).map((provider) => <button key={provider} className={filter === provider ? "selected" : ""} onClick={() => setFilter(provider)}>{provider === "github" && <Github size={13} />}{provider === "bitbucket" && <BitbucketIcon size={13} />}{provider === "gitlab" && <Gitlab size={13} />}{provider === "all" ? "All" : providerLabels[provider]}</button>)}</div></div>
+      <div className="provider-filter"><span>Provider:</span><div>{(["all", "github", "bitbucket", "gitlab"] as Provider[]).map((provider) => <button key={provider} className={filter === provider ? "selected" : ""} onClick={() => setFilter(provider)}>{provider === "github" && <GithubIcon size={13} />}{provider === "bitbucket" && <BitbucketIcon size={13} />}{provider === "gitlab" && <GitlabIcon size={13} />}{provider === "all" ? "All" : providerLabels[provider]}</button>)}</div></div>
     </section>
 
     {message && <div className="project-feedback"><Check size={16} />{message}</div>}
-    <section className="project-cards">{visibleProjects.length ? visibleProjects.map((project) => <ProjectCard key={project.id} project={project} analyses={analysisByProject[project.id] ?? []} busyId={busyId} generation={genByProject[project.id]} testCount={counts[project.id]} serverGenerating={isServerGenerating(project.id)} onAnalyze={analyze} onGenerate={generate} onDelete={deleteProject} />) : <div className="project-empty"><FolderGit2 size={26} /><h2>No projects found</h2><p>Try another filter, or connect a repository to create your first project.</p></div>}</section>
+    <section className="project-cards">{visibleProjects.length ? visibleProjects.map((project) => <ProjectCard key={project.id} project={project} analyses={analysisByProject[project.id] ?? []} busyId={busyId} generation={genByProject[project.id]} testCount={counts[project.id]} serverGenerating={isServerGenerating(project.id)} connectedProviders={connectedProviders} onAnalyze={analyze} onGenerate={generate} onDelete={deleteProject} />) : <div className="project-empty"><FolderGit2 size={26} /><h2>No projects found</h2><p>Try another filter, or connect a repository to create your first project.</p></div>}</section>
 
     {showModal && <div className="project-modal-backdrop" role="presentation" onMouseDown={() => setShowModal(false)}><form className="project-modal" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}><header><div><span className="modal-icon"><Plus size={16} /></span><div><h2>Connect new repository</h2><p>Import a project to analyze and generate reviewable test suites.</p></div></div><button type="button" onClick={() => setShowModal(false)} aria-label="Close"><X size={18} /></button></header><div className="modal-fields"><label>Project name<input name="name" required placeholder="checkout-payment-service" /></label><label>Repository URL<input name="repositoryUrl" type="url" required placeholder="https://github.com/org/repository" /></label><div className="modal-row"><label>Default branch<input name="defaultBranch" defaultValue="main" required /></label><label>Provider<select name="provider" defaultValue="github"><option value="github">GitHub</option><option value="bitbucket">Bitbucket</option><option value="gitlab">GitLab</option></select></label></div></div><footer><button type="button" className="modal-cancel" onClick={() => setShowModal(false)}>Cancel</button><button className="new-project-button"><Check size={15} />Connect project</button></footer></form></div>}
   </section></AppShell>;
@@ -179,13 +191,20 @@ export default function ProjectsPage() {
 
 function Stat({ icon, label, value, tone }: { icon: React.ReactNode; label: string; value: string | number; tone: string }) { return <article className={`stat-card ${tone}`}><span>{icon}</span><div><small>{label}</small><strong>{value}</strong></div></article>; }
 
-function ProjectCard({ project, analyses, busyId, generation, testCount, serverGenerating, onAnalyze, onGenerate, onDelete }: { project: Project; analyses: AnalysisRun[]; busyId: string | null; generation?: GenerationRunDto; testCount?: number; serverGenerating: boolean; onAnalyze: (project: Project) => void; onGenerate: (project: Project) => void; onDelete: (project: Project) => void }) {
+function ProjectCard({ project, analyses, busyId, generation, testCount, serverGenerating, connectedProviders, onAnalyze, onGenerate, onDelete }: { project: Project; analyses: AnalysisRun[]; busyId: string | null; generation?: GenerationRunDto; testCount?: number; serverGenerating: boolean; connectedProviders: string[]; onAnalyze: (project: Project) => void; onGenerate: (project: Project) => void; onDelete: (project: Project) => void }) {
   const provider = providerFor(project);
   const analyzing = busyId === `analyze-${project.id}`;
   const generating = busyId === `generate-${project.id}` || serverGenerating;
   const genStale = generation?.status === "RUNNING" && !serverGenerating;
   const genState = generating ? "Generating tests…" : genStale ? "Generation timed out" : generation?.status === "COMPLETED" ? `Generated ${generation.created ?? 0} tests` : generation?.status === "FAILED" ? "Generation failed" : null;
   const analyzed = analyses.some((analysis) => analysis.branch === project.defaultBranch && analysis.status === "COMPLETED");
-  const githubOnly = provider !== "github";
-  return <article className="project-card"><div className="project-card-main"><div className="project-title"><span className={`provider-badge ${provider}`}>{provider === "github" ? <Github size={13} /> : provider === "bitbucket" ? <BitbucketIcon size={13} /> : <Gitlab size={13} />}{providerLabels[provider]}</span><h2>{project.name}</h2></div><div className="project-meta"><span className="project-url">{project.repositoryUrl}</span><span className="branch"><ChevronDown size={13} />{project.defaultBranch}</span><span><Clock3 size={13} />{analyzed ? "Analysis complete" : "Ready to analyze"}</span>{genState && <span className={generating ? "gen-live" : genStale || generation?.status === "FAILED" ? "gen-failed" : "gen-done"}><Bot size={13} />{genState}</span>}</div></div><div className="project-card-actions"><div className="test-count"><span><TestTube2 size={15} /></span><div><small>Test cases</small><strong>{testCount != null ? testCount : "Not generated"}</strong></div></div><div className="project-buttons"><span className="generate-tooltip" data-tooltip={githubOnly ? "Repository analysis supports GitHub only today — Bitbucket and GitLab analysis is on the roadmap." : analyzed ? undefined : "Analyze the repository before generating test cases."}><button className="analyze-button" disabled={githubOnly || analyzing || generating} onClick={() => onAnalyze(project)}><SearchCode size={14} />{analyzing ? "Analyzing..." : "Analyze"}</button></span><span className="generate-tooltip" data-tooltip={githubOnly ? "Generate needs analysis, which supports GitHub only today." : analyzed ? undefined : "Analyze the repository before generating test cases."}><button className="generate-button" disabled={githubOnly || !analyzed || analyzing || generating} onClick={() => onGenerate(project)}><Bot size={14} />{generating ? "Generating…" : "Generate tests"}</button></span><button className="delete-project" aria-label={`Delete ${project.name}`} onClick={() => onDelete(project)}><Trash2 size={16} /></button></div></div></article>;
+  const unsupported = provider === "gitlab";
+  const connected = connectedProviders.includes(provider);
+  const connectHint = `Connect ${providerLabels[provider]} in Settings → Connected accounts to enable this.`;
+  const unsupportedHint = "GitLab analysis is on the roadmap — GitHub and Bitbucket are supported today.";
+  const analyzeDisabled = unsupported || !connected || analyzing || generating;
+  const generateDisabled = unsupported || !connected || !analyzed || analyzing || generating;
+  const analyzeTooltip = unsupported ? unsupportedHint : !connected ? connectHint : undefined;
+  const generateTooltip = unsupported ? unsupportedHint : !connected ? connectHint : !analyzed ? "Analyze the repository before generating test cases." : undefined;
+  return <article className="project-card"><div className="project-card-main"><div className="project-title"><span className={`provider-badge ${provider}`}>{provider === "github" ? <GitlabIcon size={13} /> : provider === "bitbucket" ? <BitbucketIcon size={13} /> : <GitlabIcon size={13} />}{providerLabels[provider]}</span><h2>{project.name}</h2></div><div className="project-meta"><span className="project-url">{project.repositoryUrl}</span><span className="branch"><ChevronDown size={13} />{project.defaultBranch}</span><span><Clock3 size={13} />{analyzed ? "Analysis complete" : "Ready to analyze"}</span>{genState && <span className={generating ? "gen-live" : genStale || generation?.status === "FAILED" ? "gen-failed" : "gen-done"}><Bot size={13} />{genState}</span>}</div></div><div className="project-card-actions"><div className="test-count"><span><TestTube2 size={15} /></span><div><small>Test cases</small><strong>{testCount != null ? testCount : "Not generated"}</strong></div></div><div className="project-buttons"><span className="generate-tooltip" data-tooltip={analyzeTooltip}><button className="analyze-button" disabled={analyzeDisabled} onClick={() => onAnalyze(project)}><SearchCode size={14} />{analyzing ? "Analyzing..." : "Analyze"}</button></span><span className="generate-tooltip" data-tooltip={generateTooltip}><button className="generate-button" disabled={generateDisabled} onClick={() => onGenerate(project)}><Bot size={14} />{generating ? "Generating…" : "Generate tests"}</button></span><button className="delete-project" aria-label={`Delete ${project.name}`} onClick={() => onDelete(project)}><Trash2 size={16} /></button></div></div></article>;
 }

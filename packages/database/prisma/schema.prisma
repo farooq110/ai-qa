@@ -1,5 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
 }
 
 datasource db {
@@ -14,6 +15,7 @@ enum OrganizationRole {
 }
 
 enum SubscriptionStatus {
+  INCOMPLETE
   TRIALING
   ACTIVE
   PAYMENT_WARNING
@@ -94,6 +96,12 @@ enum CiProviderName {
   BITBUCKET_PIPELINES
 }
 
+enum SupportQueryStatus {
+  OPEN
+  RESOLVED
+  REJECTED
+}
+
 model User {
   id             String                  @id @default(cuid())
   email          String                  @unique
@@ -120,17 +128,21 @@ model Organization {
 }
 
 model RepositoryConnection {
-  id                    String             @id @default(cuid())
-  organizationId        String
-  provider              RepositoryProvider
-  externalAccountId     String
-  accountLogin          String
-  accessTokenCiphertext String
-  accessTokenIv         String
-  accessTokenTag        String
-  createdAt             DateTime           @default(now())
-  updatedAt             DateTime           @updatedAt
-  organization          Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  id                     String             @id @default(cuid())
+  organizationId         String
+  provider               RepositoryProvider
+  externalAccountId      String
+  accountLogin           String
+  accessTokenCiphertext  String
+  accessTokenIv          String
+  accessTokenTag         String
+  refreshTokenCiphertext String?
+  refreshTokenIv         String?
+  refreshTokenTag        String?
+  accessTokenExpiresAt   DateTime?
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+  organization           Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   @@unique([organizationId, provider, externalAccountId])
 }
 
@@ -143,6 +155,12 @@ model OrganizationMembership {
   user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
+enum BillingInterval {
+  MONTHLY
+  QUARTERLY
+  YEARLY
+}
+
 model PricingPlan {
   id                    String  @id @default(cuid())
   key                   String  @unique
@@ -153,19 +171,44 @@ model PricingPlan {
   executionSlotLimit    Int     @default(5)
   retentionDays         Int     @default(30)
   isActive              Boolean @default(true)
+  stripeProductId       String? @unique
+  prices                PlanPrice[]
   subscriptions         Subscription[]
+}
+
+model PlanPrice {
+  id              String          @id @default(cuid())
+  planId          String
+  interval        BillingInterval
+  stripePriceId   String          @unique
+  lookupKey       String?
+  unitAmountCents Int
+  currency        String          @default("usd")
+  isActive        Boolean         @default(true)
+  plan            PricingPlan     @relation(fields: [planId], references: [id], onDelete: Cascade)
+  subscriptions   Subscription[]
+}
+
+model BillingEvent {
+  id        String   @id
+  type      String
+  createdAt DateTime @default(now())
 }
 
 model Subscription {
   id                   String             @id @default(cuid())
   organizationId       String             @unique
-  stripeCustomerId     String             @unique
+  stripeCustomerId     String?            @unique
   stripeSubscriptionId String?            @unique
   planId               String?
-  status               SubscriptionStatus @default(TRIALING)
+  priceId              String?
+  status               SubscriptionStatus @default(INCOMPLETE)
   currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean            @default(false)
+  trialEndsAt          DateTime?
   organization         Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   plan                 PricingPlan?       @relation(fields: [planId], references: [id], onDelete: SetNull)
+  price                PlanPrice?         @relation(fields: [priceId], references: [id], onDelete: SetNull)
 }
 
 model AiUsageRecord {
@@ -340,8 +383,20 @@ model Artifact {
   kind            ArtifactKind
   path            String
   contentType     String       @default("image/png")
+  storage         String       @default("local")
   executionPlan   ExecutionPlan @relation(fields: [executionPlanId], references: [id], onDelete: Cascade)
   createdAt       DateTime     @default(now())
+}
+
+model SupportQuery {
+  id          String             @id @default(cuid())
+  title       String
+  description String
+  email       String
+  imageUrl    String?
+  status      SupportQueryStatus @default(OPEN)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
 }
 
 model AuditEvent {

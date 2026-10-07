@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { Check, CircleHelp, GitBranch, Globe, Link2, Plus, Trash2, Unplug, X } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
@@ -8,15 +9,6 @@ import { SearchableSelect } from "@/components/searchable-select";
 import { api, apiUrl, fmtDate, statusLabels } from "@/lib/api";
 import { useMe, useProjects, useToast } from "@/lib/hooks";
 
-interface BillingSummary {
-  subscription: { status: string; currentPeriodEnd: string | null; stripeCustomerId: string; hasStripeSubscription: boolean } | null;
-  plan: { key: string; name: string; monthlyPriceUsd: number; tokenQuotaMonthly: number; warningThresholdPct: number; executionSlotLimit: number; retentionDays: number } | null;
-  usage: { inputTokens: number; outputTokens: number; totalTokens: number };
-  remainingTokens: number;
-  tokenQuotaMonthly: number;
-  executionSlotLimit: number;
-  availablePlans: Array<{ key: string; name: string; monthlyPriceUsd: number; tokenQuotaMonthly: number; executionSlotLimit: number }>;
-}
 interface EnvironmentDto { id: string; name: string; url: string; isDefault: boolean; hasCredentials?: boolean; loginUrl?: string | null }
 interface ConnectionDto { id: string; provider: string; accountLogin: string; createdAt: string; updatedAt: string }
 
@@ -30,7 +22,6 @@ export default function SettingsPage() {
   const me = useMe();
   const { projects, selected } = useProjects();
   const { toast, notify } = useToast();
-  const [billing, setBilling] = useState<BillingSummary | null>(null);
   const [environments, setEnvironments] = useState<EnvironmentDto[]>([]);
   const [newEnvironment, setNewEnvironment] = useState<{ name: string; url: string }>({ name: "", url: "" });
   const [showAuth, setShowAuth] = useState(false);
@@ -44,7 +35,6 @@ export default function SettingsPage() {
 
   const reload = useCallback(async () => {
     try {
-      setBilling(await api<BillingSummary>("/v1/billing/summary"));
       const envProject = envProjectId || selected?.id;
       if (envProject) setEnvironments(await api<EnvironmentDto[]>(`/v1/projects/${envProject}/environments`));
       setConnections(await api<ConnectionDto[]>("/v1/repository-connections"));
@@ -63,12 +53,15 @@ export default function SettingsPage() {
     const provider = params.get("provider");
     const label = provider ? provider.charAt(0).toUpperCase() + provider.slice(1) : "account";
     if (connected === "error") {
-      notify(`${label} connection was not completed. GitHub may have denied access or the attempt expired — try Connect ${label} again.`, "error");
+      notify(`${label} connection was not completed. The attempt may have expired or been denied — try Connect ${label} again.`, "error");
+      // Even on error, refresh the connections list in case the backend recorded the connection.
+      void reload();
     } else {
       notify(`${connected.charAt(0).toUpperCase()}${connected.slice(1)} account connected. You can now analyze its repositories.`, "success");
+      void reload();
     }
     window.history.replaceState({}, "", "/settings");
-  }, [notify]);
+  }, [notify, reload]);
 
   function connectProvider(provider: string) {
     void (async () => {
@@ -102,7 +95,6 @@ export default function SettingsPage() {
 
   const envProjectId2 = envProjectId || selected?.id || "";
   const envProjectName = envProjectId ? (projects ?? []).find((project) => project.id === envProjectId)?.name ?? "Project" : (selected?.name ?? "Select a project");
-  const usagePct = billing && billing.tokenQuotaMonthly > 0 ? Math.min(100, Math.round((billing.usage.totalTokens / billing.tokenQuotaMonthly) * 100)) : 0;
 
   return (
     <AppShell activePath="/settings">
@@ -126,28 +118,9 @@ export default function SettingsPage() {
         </section>
 
         <section className="panel">
-          <div className="panel-heading"><div><p className="eyebrow">BILLING</p><h2>{billing?.plan?.name ?? "Plan"} plan</h2></div>
-            {billing?.subscription && <span className={`status ${billing.subscription.status === "ACTIVE" || billing.subscription.status === "TRIALING" ? "approved" : "needs-review"}`}>{statusLabels[billing.subscription.status] ?? billing.subscription.status}</span>}
-          </div>
-          {billing && (
-            <>
-              <div className="usage-meter">
-                <div className="usage-row"><span>AI tokens this month</span><strong>{billing.usage.totalTokens.toLocaleString()} / {billing.tokenQuotaMonthly.toLocaleString()}</strong></div>
-                <div className="progress"><span className={usagePct >= (billing.plan?.warningThresholdPct ?? 80) ? "has-failures" : ""} style={{ width: `${usagePct}%` }} /></div>
-                <small>{billing.remainingTokens.toLocaleString()} remaining · renews {billing.subscription?.currentPeriodEnd ? new Date(billing.subscription.currentPeriodEnd).toLocaleDateString() : "—"} · {billing.executionSlotLimit} concurrent execution slots</small>
-              </div>
-              <h3 className="modal-subhead">Available plans</h3>
-              <div className="plan-list">
-                {billing.availablePlans.map((plan) => (
-                  <div className={`plan-option ${billing.plan?.key === plan.key ? "current" : ""}`} key={plan.key}>
-                    <div><strong>{plan.name}</strong><small>{plan.tokenQuotaMonthly.toLocaleString()} tokens · {plan.executionSlotLimit} slots · ${plan.monthlyPriceUsd}/mo</small></div>
-                    {billing.plan?.key === plan.key ? <span className="chip tag">Current</span> : <small className="dim">Contact sales to change</small>}
-                  </div>
-                ))}
-              </div>
-              <p className="dim">Stripe manages payment collection. When a payment fails the organization enters Past due, then Billing locked after the due date — blocking generation and execution.</p>
-            </>
-          )}
+          <div className="panel-heading"><div><p className="eyebrow">BILLING</p><h2>{me?.organization?.subscription?.plan?.name ?? "No"} plan</h2></div></div>
+          <p className="muted">Plan, trial, usage, invoices and cancellation are managed on the Billing page.</p>
+          <Link className="secondary-button" href="/billing">Open billing</Link>
         </section>
 
         <section className="panel span-full">

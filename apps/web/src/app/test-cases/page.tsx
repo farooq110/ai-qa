@@ -4,10 +4,10 @@ import Link from "next/link";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
-  Archive, ArrowDown, ArrowUp, Ban, Check, ChevronDown, CircleHelp, FilePlus2, FolderKanban, Github, Gitlab, GripVertical, Layers, LayoutList, Pencil, PlayCircle,
+  Archive, ArrowDown, ArrowUp, Ban, Check, ChevronDown, CircleHelp, Crosshair, FilePlus2, FolderKanban,   GripVertical, Layers, LayoutList, Pencil, PlayCircle,
   Plus, RotateCcw, Search, Sparkles, Tag, ThumbsUp, Trash2, X, Network, CircleDot
 } from "lucide-react";
-import { BitbucketIcon } from "@/components/brand-icons";
+import { BitbucketIcon, GithubIcon, GitlabIcon } from "@/components/brand-icons";
 import { AppShell } from "@/components/app-shell";
 import { RunEnvironmentModal } from "@/components/run-environment-modal";
 import { SearchableSelect } from "@/components/searchable-select";
@@ -15,7 +15,7 @@ import { InfoTooltip } from "@/components/info-tooltip";
 import { api, categoryLabels, fmtRelative, statusClass, statusLabels } from "@/lib/api";
 import { useProjects, useToast } from "@/lib/hooks";
 
-interface StepDto { action: string; target: string; value?: string; condition?: string }
+interface StepDto { action: string; target: string; value?: string; condition?: string; region?: { x: number; y: number; w: number; h: number }; tolerance?: number }
 interface DefinitionDto { capability?: string; category?: string; preconditions?: string[]; steps?: StepDto[]; expectedResult?: string }
 interface TestRow {
   id: string; projectId: string; title: string; status: string; source: string; capability: string | null; category: string | null;
@@ -238,7 +238,7 @@ function TestCasesInner() {
             <button type="button" className={providerFilter === "" ? "seg on" : "seg"} onClick={() => setProviderFilter("")}>All</button>
             {providerOptions.map((provider) => (
               <button type="button" key={provider.value} className={providerFilter === provider.value ? "seg on " + provider.value.toLowerCase() : "seg " + provider.value.toLowerCase()} onClick={() => setProviderFilter(provider.value)} aria-pressed={providerFilter === provider.value}>
-                {provider.value === "GITHUB" ? <Github size={13} /> : provider.value === "BITBUCKET" ? <BitbucketIcon size={13} /> : <Gitlab size={13} />}
+                {provider.value === "GITHUB" ? <GithubIcon size={13} /> : provider.value === "BITBUCKET" ? <BitbucketIcon size={13} /> : <GitlabIcon size={13} />}
                 {provider.label}
               </button>
             ))}
@@ -298,7 +298,7 @@ function TestCasesInner() {
                 <span className={`priority ${test.priority.toLowerCase()}`}>{test.priority}</span>
                 <span className="project-cell">
                   <span className="project-cell-name"><FolderKanban size={12} />{test.projectName ?? projectNameOf(test.projectId)}</span>
-                  {test.provider && <span className={`provider-badge ${test.provider.toLowerCase()}`}>{test.provider === "GITHUB" ? <Github size={10} /> : test.provider === "BITBUCKET" ? <BitbucketIcon size={10} /> : <Gitlab size={10} />}{providerLabels[test.provider] ?? test.provider}</span>}
+                  {test.provider && <span className={`provider-badge ${test.provider.toLowerCase()}`}>{test.provider === "GITHUB" ? <GithubIcon size={10} /> : test.provider === "BITBUCKET" ? <BitbucketIcon size={10} /> : <GitlabIcon size={10} />}{providerLabels[test.provider] ?? test.provider}</span>}
                 </span>
                 <span className="chips">
                   {test.modules.map((entry) => <span className="chip module" key={entry.module.id}><Layers size={11} />{entry.module.name}</span>)}
@@ -324,6 +324,9 @@ function TestCasesInner() {
         mode={editor.mode}
         test={editor.mode === "edit" ? editor.test : null}
         classifications={classifications}
+        onClassificationCreated={(kind, item) => setClassifications((current) => kind === "module"
+          ? { ...current, modules: current.modules.some((entry) => entry.id === item.id) ? current.modules : [...current.modules, item] }
+          : { ...current, tags: current.tags.some((entry) => entry.id === item.id) ? current.tags : [...current.tags, item] })}
         onClose={() => setEditor(null)}
         onSaved={async (message) => { setEditor(null); notify(message, "success"); await reload(); }}
         onError={(message) => notify(message, "error")}
@@ -577,72 +580,113 @@ function ModuleGroups({ tests, collapsed, setCollapsed, checked, setChecked, bus
   );
 }
 
-function ChipPicker({ kind, items, selected, onToggle, onSelectNew }: {
+/**
+ * Compact searchable multi-select for modules/tags: selected items render as
+ * removable chips, the input filters the catalog, and typing a name that matches
+ * nothing offers "Create" — which creates it, assigns it, and adds it to the
+ * options list in one action (the old chip cloud went stale after creating).
+ */
+function ClassificationCombobox({ kind, items, selected, onToggle, onSelect, onCreate, onCreateError }: {
   kind: "module" | "tag";
   items: Array<{ id: string; name: string }>;
   selected: Set<string>;
   onToggle: (id: string) => void;
-  onSelectNew: (item: { id: string; name: string }) => void;
+  onSelect: (id: string) => void;
+  onCreate: (name: string) => Promise<boolean>;
+  onCreateError: (message: string) => void;
 }) {
-  const [creating, setCreating] = useState(false);
-  const [draft, setDraft] = useState("");
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [highlight, setHighlight] = useState(0);
   const isModule = kind === "module";
   const Icon = isModule ? Layers : Tag;
-  const selectedCount = items.filter((item) => selected.has(item.id)).length;
+  const trimmed = query.trim();
+  const lowered = trimmed.toLowerCase();
+  const matches = items
+    .filter((item) => !selected.has(item.id) && item.name.toLowerCase().includes(lowered))
+    .slice(0, 8);
+  const exactExists = trimmed !== "" && items.some((item) => item.name.toLowerCase() === lowered);
+  const canCreate = trimmed !== "" && !exactExists && !busy;
+  const options: Array<{ type: "match"; item: { id: string; name: string } } | { type: "create"; name: string }> = [
+    ...matches.map((item) => ({ type: "match" as const, item })),
+    ...(canCreate ? [{ type: "create" as const, name: trimmed }] : [])
+  ];
 
-  async function create() {
-    const name = draft.trim();
-    if (!name || busy) return;
+  async function pick(option: (typeof options)[number]) {
+    if (option.type === "match") {
+      onSelect(option.item.id);
+      setQuery("");
+      setOpen(false);
+      return;
+    }
     setBusy(true);
-    try {
-      const created = await api<{ id: string; name: string }>(`/v1/classifications/${isModule ? "modules" : "tags"}`, { method: "POST", body: { name } });
-      setDraft("");
-      setCreating(false);
-      onSelectNew(created);
-    } catch {
-      setBusy(false);
-    } finally {
-      setBusy(false);
+    const ok = await onCreate(option.name);
+    setBusy(false);
+    if (ok) { setQuery(""); setOpen(false); }
+    else onCreateError(`Could not create the ${kind} — it may already exist.`);
+  }
+
+  function onKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "ArrowDown") { event.preventDefault(); setOpen(true); setHighlight((h) => Math.min(h + 1, Math.max(0, options.length - 1))); }
+    else if (event.key === "ArrowUp") { event.preventDefault(); setHighlight((h) => Math.max(h - 1, 0)); }
+    else if (event.key === "Enter") {
+      event.preventDefault();
+      const option = options[highlight];
+      if (option) void pick(option);
+    }
+    else if (event.key === "Escape") setOpen(false);
+    else if (event.key === "Backspace" && query === "") {
+      const last = [...selected].at(-1);
+      if (last) onToggle(last);
     }
   }
 
   return (
-    <div className={`chip-picker ${kind}`}>
-      <div className="chip-picker-head">
-        <Icon size={13} />
-        <strong>{isModule ? "Modules" : "Tags"}</strong>
-        <small>{selectedCount > 0 ? `${selectedCount} selected` : "none selected"}</small>
-        {!creating && (
-          <button type="button" className="mini-button ghost" onClick={() => setCreating(true)}><Plus size={12} />New</button>
-        )}
-      </div>
-      <div className="chip-cloud">
-        {items.map((item) => {
-          const active = selected.has(item.id);
-          return (
-            <button type="button" key={item.id} className={`chip-toggle ${kind} ${active ? "on" : ""}`} aria-pressed={active} onClick={() => onToggle(item.id)}>
-              {active ? <Check size={11} /> : <Icon size={11} />}
-              {item.name}
-            </button>
-          );
-        })}
-        {creating && (
-          <span className="chip-create">
-            <input autoFocus value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={isModule ? "Module name" : "Tag name"} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void create(); } if (event.key === "Escape") { setCreating(false); setDraft(""); } } } />
-            <button type="button" className="mini-button" onClick={() => void create()} disabled={!draft.trim() || busy}>{busy ? "…" : "Add"}</button>
-            <button type="button" className="mini-button ghost" aria-label="Cancel" onClick={() => { setCreating(false); setDraft(""); }}><X size={12} /></button>
+    <div className={`class-combo ${kind}`}>
+      <span className="class-combo-label"><Icon size={12} />{isModule ? "Modules" : "Tags"}</span>
+      <div className="class-combo-row">
+        {items.filter((item) => selected.has(item.id)).map((item) => (
+          <span key={item.id} className={`chip ${kind}`}>
+            <Icon size={11} />{item.name}
+            <button type="button" className="chip-x" aria-label={`Remove ${item.name}`} onClick={() => onToggle(item.id)}><X size={10} /></button>
           </span>
-        )}
-        {items.length === 0 && !creating && <small className="dim">{isModule ? "No modules yet." : "No tags yet."}</small>}
+        ))}
+        <div className="class-combo-box">
+          <input
+            value={query}
+            onChange={(event) => { setQuery(event.target.value); setOpen(true); setHighlight(0); }}
+            onFocus={() => setOpen(true)}
+            onBlur={() => window.setTimeout(() => setOpen(false), 150)}
+            onKeyDown={onKeyDown}
+            placeholder={isModule ? "Search or create module..." : "Search or create tag..."}
+            aria-label={isModule ? "Search or create modules" : "Search or create tags"}
+          />
+          {open && options.length > 0 && (
+            <div className="combo-menu" role="listbox">
+              {options.map((option, index) => option.type === "match" ? (
+                <button type="button" key={option.item.id} className={`combo-option ${index === highlight ? "active" : ""}`} onMouseDown={(event) => { event.preventDefault(); void pick(option); }} onMouseEnter={() => setHighlight(index)}>
+                  <span><strong>{option.item.name}</strong></span>
+                  <Icon size={12} />
+                </button>
+              ) : (
+                <button type="button" key="__create" className={`combo-option create ${index === highlight ? "active" : ""}`} onMouseDown={(event) => { event.preventDefault(); void pick(option); }} onMouseEnter={() => setHighlight(index)}>
+                  <span><strong>Create &quot;{option.name}&quot;</strong></span>
+                  <Plus size={12} />
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, classifications, onClose, onSaved, onError }: {
+function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, classifications, onClose, onSaved, onError, onClassificationCreated }: {
   projectId: string; onProjectChange?: (id: string) => void; projectOptions: Array<{ value: string; label: string }>; mode: "create" | "edit"; test: TestRow | null; classifications: Classifications;
   onClose: () => void; onSaved: (message: string) => Promise<void>; onError: (message: string, tone?: "info" | "success" | "error") => void;
+  onClassificationCreated: (kind: "module" | "tag", item: { id: string; name: string }) => void;
 }) {
   const [title, setTitle] = useState(test?.title ?? "");
   const [capability, setCapability] = useState(test?.capability ?? "");
@@ -659,8 +703,12 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState("");
   const [recording, setRecording] = useState<{ sessionId: string; count: number } | null>(null);
+  const [recordingStarting, setRecordingStarting] = useState(false);
+  const [regionPicker, setRegionPicker] = useState<{ index: number } | null>(null);
 
   async function startRecording() {
+    if (recordingStarting || recording) return;
+    setRecordingStarting(true);
     setAiError("");
     try {
       const envs = await api<Array<{ id: string; url: string; isDefault: boolean }>>(`/v1/projects/${projectId}/environments`);
@@ -676,6 +724,8 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
       }, 2000);
     } catch (error) {
       onError(error instanceof Error ? error.message : "Unable to start the recorder");
+    } finally {
+      setRecordingStarting(false);
     }
   }
 
@@ -864,8 +914,8 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
             <div className="record-bar">
               {!recording ? (
                 <>
-                  <button type="button" className="record-btn" onClick={() => void startRecording()}>
-                    <CircleDot size={14} /> Record steps in a browser
+                  <button type="button" className="record-btn" disabled={recordingStarting} onClick={() => void startRecording()}>
+                    <CircleDot size={14} /> {recordingStarting ? "Opening browser..." : "Record steps in a browser"}
                   </button>
                   <small className="record-hint">Opens your app in a browser - click through the flow and every action is captured as a step. Passwords are masked as {'{{password}}'}.</small>
                 </>
@@ -895,11 +945,19 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
                 <span className="drag-handle" draggable title="Drag to reorder" onDragStart={() => { dragIndex.current = index; }} onDragEnd={() => { dragIndex.current = null; setDragOver(null); }}><GripVertical size={14} /></span>
                 <span className="step-index">{index + 1}</span>
                 <select value={step.action} onChange={(event) => updateStep(index, { action: event.target.value })} aria-label={`Step ${index + 1} action`}>
-                  {["navigate", "click", "fill", "select", "upload", "assert", "waitFor", "screenshot"].map((action) => <option key={action} value={action}>{action}</option>)}
+                  {["navigate", "click", "fill", "select", "upload", "assert", "waitFor", "wait", "screenshot", "capture", "assertColor", "assertData"].map((action) => <option key={action} value={action}>{action === "waitFor" ? "waitFor (text)" : action === "wait" ? "wait (seconds)" : action === "assertColor" ? "assert color" : action === "assertData" ? "assert data" : action === "capture" ? "capture (variable)" : action}</option>)}
                 </select>
-                <input value={step.target} onChange={(event) => updateStep(index, { target: event.target.value })} placeholder={step.action === "navigate" ? "/route" : step.action === "screenshot" ? "Frame name (e.g. before-flip)" : step.action === "assert" && step.condition === "visual" ? "Describe what should be true on screen" : "Visible text or label"} aria-label={`Step ${index + 1} target`} />
-                {(step.action === "fill" || step.action === "select" || step.action === "upload" || (step.action === "assert" && step.condition === "visual")) && (
-                  <input value={step.value ?? ""} onChange={(event) => updateStep(index, { value: event.target.value })} placeholder={step.action === "fill" ? "e.g. {{username}}" : step.action === "assert" ? "Reference frame name (optional)" : "Value"} aria-label={`Step ${index + 1} value`} />
+                <input value={step.target} onChange={(event) => updateStep(index, { target: event.target.value })} placeholder={step.action === "navigate" ? "/route" : step.action === "wait" ? "Seconds (e.g. 5)" : step.action === "screenshot" ? "Frame name (e.g. before-flip)" : step.action === "capture" ? "Regex with one group" : step.action === "assertColor" ? "Canvas selector (optional)" : step.action === "assertData" ? "API URL — {{query:name}} supported" : step.action === "assert" && step.condition === "visual" ? "Describe what should be true on screen" : "Visible text or label"} aria-label={`Step ${index + 1} target`} />
+                {(step.action === "fill" || step.action === "select" || step.action === "upload" || (step.action === "assert" && step.condition === "visual") || step.action === "assertColor" || step.action === "assertData" || step.action === "capture") && (
+                  <input value={step.value ?? ""} onChange={(event) => updateStep(index, { value: event.target.value })} placeholder={step.action === "fill" ? "e.g. {{username}}" : step.action === "assertColor" ? "#0d5ea0" : step.action === "assertData" ? "0.configuration.body == #0d5ea0" : step.action === "capture" ? "Variable name (e.g. designNumber)" : step.action === "assert" ? "Reference frame name (optional)" : "Value"} aria-label={`Step ${index + 1} value`} />
+                )}
+                {step.action === "assertColor" && (
+                  <span className="region-fields">
+                    {(["x", "y", "w", "h"] as const).map((key) => (
+                      <input key={key} className="region-input" type="number" min={0} max={100} value={step.region?.[key] ?? ""} onChange={(event) => updateStep(index, { region: { x: step.region?.x ?? 0, y: step.region?.y ?? 0, w: step.region?.w ?? 10, h: step.region?.h ?? 10, [key]: Number(event.target.value) } })} placeholder={key} aria-label={`Region ${key} percent`} title={`Region ${key} (percent)`} />
+                    ))}
+                    <button type="button" className="mini-button" onClick={() => setRegionPicker({ index })}><Crosshair size={12} />Pick</button>
+                  </span>
                 )}
                 {step.action === "assert" && (
                   <select value={step.condition ?? "visible"} onChange={(event) => updateStep(index, { condition: event.target.value })} aria-label={`Step ${index + 1} condition`}>
@@ -916,27 +974,45 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
           </fieldset>
           <label className="block-label">Expected result<textarea rows={2} value={expected} onChange={(event) => setExpected(event.target.value)} placeholder="The cart badge shows the updated quantity." /></label>
           <div className="classification-editor">
-            <ChipPicker
+            <ClassificationCombobox
               kind="module"
               items={classifications.modules}
               selected={moduleIds}
               onToggle={(id) => setModuleIds((current) => {
                 const next = new Set(current);
-                if (next.has(id)) next.delete(id); else next.add(id);
+                next.delete(id);
                 return next;
               })}
-              onSelectNew={(item) => setModuleIds((current) => new Set(current).add(item.id))}
+              onSelect={(id) => setModuleIds((current) => new Set(current).add(id))}
+              onCreate={async (name) => {
+                try {
+                  const created = await api<{ id: string; name: string }>("/v1/classifications/modules", { method: "POST", body: { name } });
+                  onClassificationCreated("module", created);
+                  setModuleIds((current) => new Set(current).add(created.id));
+                  return true;
+                } catch { return false; }
+              }}
+              onCreateError={(message) => onError(message)}
             />
-            <ChipPicker
+            <ClassificationCombobox
               kind="tag"
               items={classifications.tags}
               selected={tagIds}
               onToggle={(id) => setTagIds((current) => {
                 const next = new Set(current);
-                if (next.has(id)) next.delete(id); else next.add(id);
+                next.delete(id);
                 return next;
               })}
-              onSelectNew={(item) => setTagIds((current) => new Set(current).add(item.id))}
+              onSelect={(id) => setTagIds((current) => new Set(current).add(id))}
+              onCreate={async (name) => {
+                try {
+                  const created = await api<{ id: string; name: string }>("/v1/classifications/tags", { method: "POST", body: { name } });
+                  onClassificationCreated("tag", created);
+                  setTagIds((current) => new Set(current).add(created.id));
+                  return true;
+                } catch { return false; }
+              }}
+              onCreateError={(message) => onError(message)}
             />
           </div>
         </div>
@@ -944,6 +1020,130 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
           <button className="modal-cancel" onClick={onClose}>Cancel</button>
           <button className="primary-button" onClick={save} disabled={saving || !title.trim() || steps.some((step) => !step.target.trim())}>{saving ? "Saving…" : mode === "create" ? "Create test case" : "Save new version"}</button>
         </footer>
+      </div>
+      {regionPicker && projectId && (
+        <RegionPickerModal
+          projectId={projectId}
+          onApply={(region) => {
+            updateStep(regionPicker.index, { region });
+            setRegionPicker(null);
+          }}
+          onClose={() => setRegionPicker(null)}
+          onError={(message) => onError(message)}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Drag-to-pick a canvas region for assert color: opens the app in the recorder
+ * browser (user navigates to the state they want), screenshots it live, and the
+ * rectangle the user drags becomes percent coordinates — never typed by hand.
+ */
+function RegionPickerModal({ projectId, onApply, onClose, onError }: {
+  projectId: string;
+  onApply: (region: { x: number; y: number; w: number; h: number }) => void;
+  onClose: () => void;
+  onError: (message: string, tone?: "info" | "success" | "error") => void;
+}) {
+  const [session, setSession] = useState<string | null>(null);
+  const [image, setImage] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [shotBusy, setShotBusy] = useState(false);
+  const [drag, setDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const boxRef = useRef<HTMLDivElement | null>(null);
+
+  async function openBrowser() {
+    setStarting(true);
+    try {
+      const envs = await api<Array<{ id: string; url: string; isDefault: boolean }>>(`/v1/projects/${projectId}/environments`);
+      const env = envs.find((e) => e.isDefault) ?? envs[0];
+      if (!env) { onError("Add an environment first - the picker needs your app URL."); return; }
+      const result = await api<{ sessionId: string }>(`/v1/projects/${projectId}/recordings`, { method: "POST", body: { url: env.url } });
+      setSession(result.sessionId);
+      await refresh(result.sessionId);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Unable to open the picker browser");
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  async function refresh(sessionId: string) {
+    setShotBusy(true);
+    try {
+      const data = await api<{ image: string }>(`/v1/projects/${projectId}/recordings/${sessionId}/screenshot`);
+      setImage(data.image);
+      setDrag(null);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Screenshot failed");
+    } finally {
+      setShotBusy(false);
+    }
+  }
+
+  function relative(event: React.MouseEvent) {
+    const rect = boxRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return {
+      x: Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100)),
+      y: Math.max(0, Math.min(100, ((event.clientY - rect.top) / rect.height) * 100))
+    };
+  }
+
+  function onMouseDown(event: React.MouseEvent) {
+    const p = relative(event);
+    setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+  }
+  function onMouseMove(event: React.MouseEvent) {
+    if (!drag) return;
+    const p = relative(event);
+    setDrag({ ...drag, x1: p.x, y1: p.y });
+  }
+  function onMouseUp() {
+    if (!drag) return;
+    const x = Math.min(drag.x0, drag.x1);
+    const y = Math.min(drag.y0, drag.y1);
+    const w = Math.abs(drag.x1 - drag.x0);
+    const h = Math.abs(drag.y1 - drag.y0);
+    if (w < 1 || h < 1) { setDrag(null); return; }
+    onApply({ x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) });
+  }
+
+  const rectStyle = drag ? {
+    left: `${Math.min(drag.x0, drag.x1)}%`,
+    top: `${Math.min(drag.y0, drag.y1)}%`,
+    width: `${Math.abs(drag.x1 - drag.x0)}%`,
+    height: `${Math.abs(drag.y1 - drag.y0)}%`
+  } : null;
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="modal region-picker" onClick={(event) => event.stopPropagation()}>
+        <header><div><p className="eyebrow">Region picker</p><h2>Drag a rectangle over the area to check</h2></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={16} /></button></header>
+        <div className="modal-body">
+          {!session ? (
+            <div className="picker-intro">
+              <p>This opens your app in a separate browser window. Navigate to the view you want to check (e.g. rotate the model so the location is visible), then come back here and press <strong>Refresh screenshot</strong>, and drag over the region.</p>
+              <button className="primary-button" disabled={starting} onClick={() => void openBrowser()}>{starting ? "Opening browser..." : "Open app in browser"}</button>
+            </div>
+          ) : (
+            <>
+              <div className="picker-toolbar">
+                <button className="mini-button" disabled={shotBusy} onClick={() => void refresh(session)}>{shotBusy ? "..." : "Refresh screenshot"}</button>
+                <small className="dim">The browser window stays open - navigate, refresh, then drag.</small>
+              </div>
+              {image && (
+                <div ref={boxRef} className="picker-canvas" onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={() => drag && onMouseUp()}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={image} alt="Live app screenshot" draggable={false} />
+                  {rectStyle && <div className="picker-rect" style={rectStyle} />}
+                </div>
+              )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

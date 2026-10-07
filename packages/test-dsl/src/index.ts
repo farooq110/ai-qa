@@ -1,10 +1,16 @@
-export type TestAction = "navigate" | "click" | "fill" | "upload" | "select" | "assert" | "waitFor" | "screenshot";
+export type TestAction = "navigate" | "click" | "fill" | "upload" | "select" | "assert" | "waitFor" | "screenshot" | "wait" | "assertColor" | "assertData" | "capture";
+
+export interface StepRegion { x: number; y: number; w: number; h: number }
 
 export interface TestStep {
   action: TestAction;
   target: string;
   value?: string;
   condition?: "visible" | "hidden" | "equals" | "contains" | "urlMatches" | "visual";
+  /** Percent region (0-100) of the target canvas for assertColor. */
+  region?: StepRegion;
+  /** Per-channel tolerance for assertColor canvas sampling (default 35 — lighting headroom). */
+  tolerance?: number;
 }
 
 export interface TestDefinition {

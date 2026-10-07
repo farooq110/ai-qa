@@ -10,9 +10,17 @@ interface GithubTreeEntry { path: string; type: string; sha: string; size?: numb
 interface GithubTree { tree: GithubTreeEntry[]; }
 interface GithubBranch { commit: { sha: string }; }
 interface GithubBlob { content: string; encoding: string; }
+interface BitbucketBranch { target: { hash: string }; }
+interface BitbucketSrcEntry { type: string; path: string; size?: number; }
+interface BitbucketSrcPage { values?: BitbucketSrcEntry[]; next?: string; }
+
+type AnalysisProvider = "GITHUB" | "BITBUCKET";
+
+interface RepositorySnapshot { sources: Map<string, string>; codePaths: string[]; prioritizedCount: number; }
 
 const MAX_FILES = 300;
 const FETCH_CHUNK = 25;
+const MAX_TREE_ENTRIES = 20_000;
 
 @Injectable()
 export class AnalysisService {
@@ -22,42 +30,20 @@ export class AnalysisService {
     if (user.role === "DEVELOPER") throw new ForbiddenException("This role cannot analyze repositories");
     const project = await this.prisma.project.findFirst({ where: { id: projectId, organizationId: user.organizationId } });
     if (!project) throw new NotFoundException("Project not found");
-    const repository = this.repositoryFullName(project.repositoryUrl);
+    const provider = this.detectProvider(project.repositoryUrl);
+    if (provider === "GITLAB") throw new BadRequestException("GitLab analysis is not supported yet — GitHub and Bitbucket repositories can be analyzed today.");
+    const analysisProvider: AnalysisProvider = provider;
+    const repository = this.repositoryFullName(project.repositoryUrl, analysisProvider);
     const selectedBranch = branch ?? project.defaultBranch;
-    const token = await this.connections.githubToken(user.organizationId);
-    const headers = { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "User-Agent": "proofline-local" };
-    const branchResponse = await fetch(`https://api.github.com/repos/${repository}/branches/${encodeURIComponent(selectedBranch)}`, { headers });
-    if (!branchResponse.ok) {
-      if (branchResponse.status === 401) throw new BadRequestException("GitHub rejected this organization's saved access token (401). Open Settings, disconnect the GitHub account, and connect it again to refresh the token.");
-      if (branchResponse.status === 404) throw new BadRequestException(`GitHub could not find ${repository} (404) with the connected account — check the repository URL and that the connected GitHub user has access.`);
-      if (branchResponse.status === 403) throw new BadRequestException("GitHub rate limit or permission denied (403) for the connected account. Try again shortly, or reconnect with an account that has access.");
-      throw new BadRequestException(`GitHub branch lookup failed with status ${branchResponse.status}`);
-    }
-    const commitSha = (await branchResponse.json() as GithubBranch).commit.sha;
+    const token = await this.connections.providerToken(user.organizationId, analysisProvider);
+    const headers: Record<string, string> = analysisProvider === "BITBUCKET"
+      ? { Authorization: `Bearer ${token}`, Accept: "application/json" }
+      : { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "User-Agent": "proofline-local" };
+    const commitSha = await this.resolveBranch(analysisProvider, repository, selectedBranch, headers);
     const analysis = await this.prisma.analysisRun.create({ data: { organizationId: user.organizationId, projectId, branch: selectedBranch, commitSha, status: "RUNNING" } });
 
     try {
-      const treeResponse = await fetch(`https://api.github.com/repos/${repository}/git/trees/${commitSha}?recursive=1`, { headers });
-      if (!treeResponse.ok) throw new BadRequestException(`GitHub tree lookup failed with status ${treeResponse.status}`);
-      const tree = await treeResponse.json() as GithubTree;
-
-      const codePaths = tree.tree
-        .filter((entry) => entry.type === "blob" && /\.(tsx?|jsx?)$/.test(entry.path) && (entry.size ?? 0) < 250_000)
-        .map((entry) => entry.path);
-      const prioritized = prioritizePaths(codePaths).slice(0, MAX_FILES);
-
-      // Fetch in chunks to stay friendly to GitHub's secondary rate limits.
-      const sources = new Map<string, string>();
-      for (let index = 0; index < prioritized.length; index += FETCH_CHUNK) {
-        const chunk = prioritized.slice(index, index + FETCH_CHUNK);
-        const entries = await Promise.all(chunk.map(async (path) => {
-          const entry = tree.tree.find((candidate) => candidate.path === path)!;
-          return [path, await this.readBlob(repository, entry.sha, headers)] as const;
-        }));
-        for (const [path, content] of entries) if (content) sources.set(path, content);
-      }
-      const packageEntry = tree.tree.find((entry) => entry.path === "package.json" && entry.type === "blob");
-      if (packageEntry) sources.set("package.json", await this.readBlob(repository, packageEntry.sha, headers));
+      const { sources, codePaths, prioritizedCount } = await this.collectSources(analysisProvider, repository, commitSha, headers);
 
       // A. Semantic analysis: real routes + import-graph reachability.
       const routes = extractRoutes(sources);
@@ -110,7 +96,7 @@ export class AnalysisService {
         discoveredPages,
         discoveryError: discoveredPages.length ? undefined : (discoveryError ?? "no environment URL configured for this project"),
         analyzedFiles: [...sources.keys()].filter((path) => path !== "package.json"),
-        fileCapReached: prioritized.length >= MAX_FILES && codePaths.length > MAX_FILES
+        fileCapReached: prioritizedCount >= MAX_FILES && codePaths.length > MAX_FILES
       };
 
       return await this.prisma.analysisRun.update({
@@ -130,6 +116,95 @@ export class AnalysisService {
     return this.prisma.analysisRun.findMany({ where: { organizationId: user.organizationId, projectId }, orderBy: { createdAt: "desc" } });
   }
 
+  private detectProvider(url: string): "GITHUB" | "BITBUCKET" | "GITLAB" {
+    if (/bitbucket\.org/i.test(url)) return "BITBUCKET";
+    if (/gitlab\./i.test(url)) return "GITLAB";
+    return "GITHUB";
+  }
+
+  private async resolveBranch(provider: AnalysisProvider, repository: string, branch: string, headers: Record<string, string>) {
+    const url = provider === "BITBUCKET"
+      ? `https://api.bitbucket.org/2.0/repositories/${repository}/refs/branches/${encodeURIComponent(branch)}`
+      : `https://api.github.com/repos/${repository}/branches/${encodeURIComponent(branch)}`;
+    const response = await fetch(url, { headers });
+    if (!response.ok) {
+      const label = provider === "BITBUCKET" ? "Bitbucket" : "GitHub";
+      if (response.status === 401) throw new BadRequestException(`${label} rejected this organization's saved access token (401). Open Settings, disconnect the ${label} account, and connect it again to refresh the token.`);
+      if (response.status === 404) throw new BadRequestException(`${label} could not find ${repository} (404) at branch ${branch} with the connected account — check the repository URL and that the connected ${label} user has access.`);
+      if (response.status === 403) throw new BadRequestException(`${label} rate limit or permission denied (403) for the connected account. Try again shortly, or reconnect with an account that has access.`);
+      throw new BadRequestException(`${label} branch lookup failed with status ${response.status}`);
+    }
+    return provider === "BITBUCKET"
+      ? (await response.json() as BitbucketBranch).target.hash
+      : (await response.json() as GithubBranch).commit.sha;
+  }
+
+  private async collectSources(provider: AnalysisProvider, repository: string, commitSha: string, headers: Record<string, string>) {
+    return provider === "BITBUCKET" ? this.bitbucketSources(repository, commitSha, headers) : this.githubSources(repository, commitSha, headers);
+  }
+
+  private async githubSources(repository: string, commitSha: string, headers: Record<string, string>): Promise<RepositorySnapshot> {
+    const treeResponse = await fetch(`https://api.github.com/repos/${repository}/git/trees/${commitSha}?recursive=1`, { headers });
+    if (!treeResponse.ok) throw new BadRequestException(`GitHub tree lookup failed with status ${treeResponse.status}`);
+    const tree = await treeResponse.json() as GithubTree;
+
+    const codePaths = tree.tree
+      .filter((entry) => entry.type === "blob" && /\.(tsx?|jsx?)$/.test(entry.path) && (entry.size ?? 0) < 250_000)
+      .map((entry) => entry.path);
+    const prioritized = prioritizePaths(codePaths).slice(0, MAX_FILES);
+
+    // Fetch in chunks to stay friendly to GitHub's secondary rate limits.
+    const sources = new Map<string, string>();
+    for (let index = 0; index < prioritized.length; index += FETCH_CHUNK) {
+      const chunk = prioritized.slice(index, index + FETCH_CHUNK);
+      const entries = await Promise.all(chunk.map(async (path) => {
+        const entry = tree.tree.find((candidate) => candidate.path === path)!;
+        return [path, await this.readBlob(repository, entry.sha, headers)] as const;
+      }));
+      for (const [path, content] of entries) if (content) sources.set(path, content);
+    }
+    const packageEntry = tree.tree.find((entry) => entry.path === "package.json" && entry.type === "blob");
+    if (packageEntry) sources.set("package.json", await this.readBlob(repository, packageEntry.sha, headers));
+    return { sources, codePaths, prioritizedCount: prioritized.length };
+  }
+
+  private async bitbucketSources(repository: string, commitSha: string, headers: Record<string, string>): Promise<RepositorySnapshot> {
+    // Bitbucket has no recursive tree endpoint: walk the src listing breadth-first,
+    // following its pagination. Raw file reads must not send Accept: application/json,
+    // or Bitbucket answers with file metadata instead of the contents.
+    const rawHeaders: Record<string, string> = { Authorization: headers.Authorization };
+    const codePaths: string[] = [];
+    const directories = [""];
+    let hasPackageJson = false;
+    let seen = 0;
+    while (directories.length && seen < MAX_TREE_ENTRIES) {
+      const directory = directories.shift()!;
+      let next = `https://api.bitbucket.org/2.0/repositories/${repository}/src/${commitSha}/${directory ? `${directory}/` : ""}?pagelen=100`;
+      do {
+        const pageResponse = await fetch(next, { headers });
+        if (!pageResponse.ok) throw new BadRequestException(`Bitbucket tree lookup failed with status ${pageResponse.status}`);
+        const page = await pageResponse.json() as BitbucketSrcPage;
+        for (const entry of page.values ?? []) {
+          if (entry.path === "package.json") hasPackageJson = true;
+          if (entry.type === "commit_directory") directories.push(entry.path);
+          else if (entry.type === "commit_file" && /\.(tsx?|jsx?)$/.test(entry.path) && (entry.size ?? 0) < 250_000) codePaths.push(entry.path);
+        }
+        seen += page.values?.length ?? 0;
+        next = page.next ?? "";
+      } while (next && seen < MAX_TREE_ENTRIES);
+    }
+
+    const prioritized = prioritizePaths(codePaths).slice(0, MAX_FILES);
+    const sources = new Map<string, string>();
+    for (let index = 0; index < prioritized.length; index += FETCH_CHUNK) {
+      const chunk = prioritized.slice(index, index + FETCH_CHUNK);
+      const entries = await Promise.all(chunk.map(async (path) => [path, await this.readBitbucketFile(repository, commitSha, path, rawHeaders)] as const));
+      for (const [path, content] of entries) if (content) sources.set(path, content);
+    }
+    if (hasPackageJson) sources.set("package.json", await this.readBitbucketFile(repository, commitSha, "package.json", rawHeaders));
+    return { sources, codePaths, prioritizedCount: prioritized.length };
+  }
+
   private async readBlob(repository: string, sha: string, headers: Record<string, string>) {
     const response = await fetch(`https://api.github.com/repos/${repository}/git/blobs/${sha}`, { headers });
     if (!response.ok) return "";
@@ -137,9 +212,18 @@ export class AnalysisService {
     return blob.encoding === "base64" ? Buffer.from(blob.content.replace(/\n/g, ""), "base64").toString("utf8") : "";
   }
 
-  private repositoryFullName(url: string) {
-    const match = url.match(/github\.com[/:]([^/]+)\/([^/#]+?)(?:\.git)?$/);
-    if (!match) throw new BadRequestException("Project repository must be a GitHub owner/repository URL");
+  private async readBitbucketFile(repository: string, commitSha: string, path: string, headers: Record<string, string>) {
+    const response = await fetch(`https://api.bitbucket.org/2.0/repositories/${repository}/src/${commitSha}/${path}`, { headers });
+    if (!response.ok) return "";
+    return response.text();
+  }
+
+  private repositoryFullName(url: string, provider: AnalysisProvider) {
+    const pattern = provider === "BITBUCKET"
+      ? /bitbucket\.org[/:]([^/]+)\/([^/#]+?)(?:\.git)?$/
+      : /github\.com[/:]([^/]+)\/([^/#]+?)(?:\.git)?$/;
+    const match = url.match(pattern);
+    if (!match) throw new BadRequestException(`Project repository must be a ${provider === "BITBUCKET" ? "Bitbucket workspace" : "GitHub owner"}/repository URL`);
     return `${match[1]}/${match[2]}`;
   }
 }

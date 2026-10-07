@@ -1,10 +1,21 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../database/prisma.service";
 import { recordAudit } from "../common/audit";
+import { SupportQueriesService } from "../support-queries/support-queries.service";
 
 @Injectable()
 export class AdminService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly supportQueries: SupportQueriesService) {}
+
+  supportQueryList() {
+    return this.supportQueries.list();
+  }
+
+  async updateSupportQueryStatus(id: string, status: string) {
+    const query = await this.supportQueries.updateStatus(id, status);
+    await recordAudit(this.prisma, { action: "admin.support_query_status_changed", targetType: "SupportQuery", targetId: id, metadata: { status }, scope: "PLATFORM" });
+    return query;
+  }
 
   async overview() {
     const [organizations, users, projects, tests, plans, monthStart] = await Promise.all([

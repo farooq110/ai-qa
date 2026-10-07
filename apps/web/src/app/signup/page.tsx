@@ -19,7 +19,7 @@ export default function SignUpPage() {
       if (!response.ok || !result.accessToken) throw new Error(result.message ?? "Unable to create the organization");
       window.localStorage.setItem("proofline.accessToken", result.accessToken);
       setStatus("success");
-      window.setTimeout(() => window.location.assign("/projects"), 600);
+      window.setTimeout(() => window.location.assign(`/billing${window.location.search}`), 600);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Unable to create the organization");
       setStatus("error");

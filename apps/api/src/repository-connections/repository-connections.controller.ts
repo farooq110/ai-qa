@@ -33,16 +33,21 @@ export class RepositoryConnectionsController {
   @Get(":provider/callback")
   async callback(@Param("provider") provider: string, @Query("code") code?: string, @Query("state") state?: string, @Res() reply?: FastifyReply) {
     const name = assertProviderName(provider);
-    const back = (connected: string) => `http://localhost:3004/settings?connected=${connected}&provider=${name.toLowerCase()}`;
+    const webOrigin = process.env.PUBLIC_APP_URL ?? "http://localhost:3004";
+    const back = (connected: string) => `${webOrigin}/settings?connected=${connected}&provider=${name.toLowerCase()}`;
     if (!reply) throw new BadRequestException("Response unavailable");
     try {
       if (!code || !state) throw new BadRequestException(`${name.toLowerCase()} callback requires code and state`);
       await this.connections.completeConnection(name, code, state);
-      return reply.redirect(back(name.toLowerCase()));
-    } catch {
+      // Nest pre-sets the reply status to 200 before the handler runs, so the
+      // code must be explicit — otherwise Fastify keeps 200 and browsers ignore
+      // the location header, leaving a blank page on the callback URL.
+      return reply.redirect(back(name.toLowerCase()), 302);
+    } catch (error) {
+      console.error(`Error completing ${name} connection:`, error);
       // Never render a raw error on the black callback page — send the user
       // back to Settings where the failure is explained in the UI.
-      return reply.redirect(back("error"));
+      return reply.redirect(back("error"), 302);
     }
   }
 
@@ -73,9 +78,9 @@ export class RepositoryConnectionsController {
     try {
       if (!code || !state) throw new BadRequestException("GitHub callback requires code and state");
       await this.connections.completeConnection("GITHUB", code, state);
-      return reply.redirect("http://localhost:3004/settings?connected=github&provider=github");
+      return reply.redirect(`${process.env.PUBLIC_APP_URL ?? "http://localhost:3004"}/settings?connected=github&provider=github`, 302);
     } catch {
-      return reply.redirect("http://localhost:3004/settings?connected=error&provider=github");
+      return reply.redirect(`${process.env.PUBLIC_APP_URL ?? "http://localhost:3004"}/settings?connected=error&provider=github`, 302);
     }
   }
 

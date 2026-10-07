@@ -1,0 +1,31 @@
+# Dependencies are installed inside the image
+node_modules
+**/node_modules
+
+# Build outputs are produced inside the image
+.next
+**/.next
+dist
+**/dist
+.turbo
+**/.turbo
+coverage
+
+# Never bake secrets or local-only files into images/context
+.env
+.env.*
+!.env.example
+/deploy
+**/deploy
+*.key
+*.pub
+
+# Not needed in images (root-anchored — nested dirs like apps/api/src/artifacts are SOURCE)
+.git
+.gitignore
+/artifacts
+/docs
+*.zip
+/proofline-migration-bundle*
+/graphify-out
+/PRODUCT.md
