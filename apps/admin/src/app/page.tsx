@@ -10,7 +10,7 @@ const tokenKey = "proofline.adminToken";
 
 interface Overview { organizations: number; users: number; projects: number; testCases: number; activeExecutions: number; aiTokensThisMonth: number; billingAttention: Array<{ status: string; count: number }> }
 interface OrgRow { id: string; name: string; industry: string | null; createdAt: string; members: number; projects: number; subscriptionStatus: string; plan: string | null }
-interface PlanRow { id: string; key: string; name: string; monthlyPriceUsd: number; tokenQuotaMonthly: number; executionSlotLimit: number; retentionDays: number; isActive: boolean; _count: { subscriptions: number } }
+interface PlanRow { id: string; key: string; name: string; monthlyPriceUsd: number; tokenQuotaMonthly: number; warningThresholdPct: number; executionSlotLimit: number; retentionDays: number; projectLimit: number; trialDays: number; isActive: boolean; _count: { subscriptions: number } }
 interface WorkersInfo { queuedExecutions: number; runningExecutions: number; aiCalls24h: number; configuredWorkerConcurrency: number }
 interface AuditRow { id: string; action: string; actorEmail: string | null; organizationId: string | null; targetType: string | null; targetId: string | null; metadata: Record<string, unknown> | null; createdAt: string }
 interface SupportQueryRow { id: string; title: string; description: string; email: string; imageUrl: string | null; status: string; createdAt: string }
@@ -196,21 +196,14 @@ export default function AdminPage() {
         {section === "plans" && plans && (
           <div className="grid single">
             <section className="panel">
-              <div className="title"><div><p>PRICING</p><h2>Plans &amp; entitlements</h2></div></div>
+              <div className="title"><div><p>PRICING</p><h2>Plans &amp; entitlements</h2></div><button className="admin-refresh" onClick={async () => setPlans(await get<PlanRow[]>("/v1/admin/plans", token))}><RefreshCw size={14} />Reload</button></div>
               <div className="admin-table">
-                <div className="admin-tr head"><span>Plan</span><span>Price</span><span>Token quota</span><span>Execution slots</span><span>Retention</span><span>Subscriptions</span></div>
+                <div className="admin-tr head"><span>Plan</span><span>Price $/mo</span><span>Token quota</span><span>Warning %</span><span>Slots</span><span>Projects</span><span>Retention d</span><span>Trial d</span><span>Active</span><span>Subs</span><span></span></div>
                 {plans.map((plan) => (
-                  <div className="admin-tr" key={plan.id}>
-                    <span><strong>{plan.name}</strong><small>{plan.key}</small></span>
-                    <span>${plan.monthlyPriceUsd}/mo</span>
-                    <span>{plan.tokenQuotaMonthly.toLocaleString()}</span>
-                    <span>{plan.executionSlotLimit}</span>
-                    <span>{plan.retentionDays} days</span>
-                    <span>{plan._count.subscriptions}</span>
-                  </div>
+                  <PlanEditor key={plan.id} plan={plan} token={token} onSaved={async () => { setPlans(await get<PlanRow[]>("/v1/admin/plans", token)); show(`Plan "${plan.name}" saved — enforcement is immediate.`); }} onError={show} />
                 ))}
               </div>
-              <small>Plan configuration drives server-side enforcement: AI quota reserves, execution concurrency, and artifact retention.</small>
+              <small>Changes apply server-side immediately: token quota gates AI generation, execution slots gate concurrency, project limit gates project creation, retention drives artifact cleanup. Every change is recorded in the audit trail.</small>
             </section>
           </div>
         )}
@@ -301,4 +294,65 @@ async function patch(path: string, body: unknown, token: string) {
 
 function Card({ label, value, detail, icon: Icon }: { label: string; value: string; detail: string; icon: typeof Activity }) {
   return <article className="card"><Icon size={19} /><p>{label}</p><strong>{value}</strong><small>{detail}</small></article>;
+}
+
+function PlanEditor({ plan, token, onSaved, onError }: { plan: PlanRow; token: string; onSaved: () => Promise<void>; onError: (message: string) => void }) {
+  const [draft, setDraft] = useState({
+    name: plan.name,
+    monthlyPriceUsd: plan.monthlyPriceUsd,
+    tokenQuotaMonthly: plan.tokenQuotaMonthly,
+    warningThresholdPct: plan.warningThresholdPct,
+    executionSlotLimit: plan.executionSlotLimit,
+    retentionDays: plan.retentionDays,
+    projectLimit: plan.projectLimit,
+    trialDays: plan.trialDays,
+    isActive: plan.isActive
+  });
+  const [saving, setSaving] = useState(false);
+  const dirty = JSON.stringify(draft) !== JSON.stringify({
+    name: plan.name,
+    monthlyPriceUsd: plan.monthlyPriceUsd,
+    tokenQuotaMonthly: plan.tokenQuotaMonthly,
+    warningThresholdPct: plan.warningThresholdPct,
+    executionSlotLimit: plan.executionSlotLimit,
+    retentionDays: plan.retentionDays,
+    projectLimit: plan.projectLimit,
+    trialDays: plan.trialDays,
+    isActive: plan.isActive
+  });
+
+  const num = (key: keyof typeof draft) => ({
+    type: "number",
+    min: 0,
+    value: String(draft[key]),
+    onChange: (event: React.ChangeEvent<HTMLInputElement>) => setDraft((current) => ({ ...current, [key]: event.target.value === "" ? "" : Number(event.target.value) }))
+  });
+
+  async function save() {
+    setSaving(true);
+    try {
+      await patch(`/v1/admin/plans/${plan.id}`, draft, token);
+      await onSaved();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="admin-tr plan-editor">
+      <span><strong>{draft.name}</strong><small>{plan.key}</small></span>
+      <span><input {...num("monthlyPriceUsd")} aria-label="Monthly price USD" /></span>
+      <span><input {...num("tokenQuotaMonthly")} aria-label="Token quota monthly" /></span>
+      <span><input {...num("warningThresholdPct")} aria-label="Warning threshold percent" /></span>
+      <span><input {...num("executionSlotLimit")} aria-label="Execution slot limit" /></span>
+      <span><input {...num("projectLimit")} aria-label="Project limit" /></span>
+      <span><input {...num("retentionDays")} aria-label="Retention days" /></span>
+      <span><input {...num("trialDays")} aria-label="Trial days" /></span>
+      <span><input type="checkbox" checked={draft.isActive} onChange={(event) => setDraft((current) => ({ ...current, isActive: event.target.checked }))} aria-label="Active" /></span>
+      <span>{plan._count.subscriptions}</span>
+      <span><button className="admin-save" disabled={!dirty || saving} onClick={() => void save()}>{saving ? "Saving…" : dirty ? "Save" : "Saved"}</button></span>
+    </div>
+  );
 }

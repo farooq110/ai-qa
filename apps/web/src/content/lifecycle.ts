@@ -25,7 +25,7 @@ export const lifecycle = {
       body: "Candidates come from a pinned commit: static analysis plus controlled browser discovery, turned into a versioned model of your application.",
       runnable: false,
       version: "v1",
-      log: [{ text: "Proofline generated v1 from commit 3f9c2ad", tone: "ai" }]
+      log: [{ text: "ProoflineQA generated v1 from commit 3f9c2ad", tone: "ai" }]
     },
     {
       id: "pending",

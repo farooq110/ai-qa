@@ -1,0 +1,91 @@
+---
+title: Test Steps Reference
+description: Every action, how targets resolve, what waits, timeouts, and variables.
+---
+
+## Execution model
+
+- Steps run top to bottom. The **first failing step stops the test**; its screenshot is captured.
+- There are **no automatic retries** of steps or tests. Only the internal fallbacks described below are retried.
+- A test's steps share one browser session. Tests in a run execute sequentially (1280 × 800).
+- Per-step timeout defaults to **8 seconds**.
+
+## Actions
+
+<Shot src="/images/writing-test-steps/action-dropdown.png" alt="The action dropdown with its twelve options" width={1800} height={890} />
+
+| Action | Target | Value | Behavior |
+| --- | --- | --- | --- |
+| **navigate** | Path or URL. Paths resolve against the environment URL. | — | Waits for the page to load, then up to 20 s for at least three visible interactive elements. |
+| **click** | Visible text, or `css:<selector>`. | — | See [target resolution](#how-click-targets-resolve). |
+| **fill** | Input label, or `css:<selector>`. | Text to type. | Finds the input by its label. |
+| **select** | Dropdown label. | Option to choose. | Tries text matches, then label-based selection. |
+| **upload** | File input label. | File reference. | A placeholder file is generated when the reference is missing. |
+| **assert** | Text, or URL pattern. | Depends on condition. | See [assert conditions](#assert-conditions). |
+| **waitFor** | Text. | — | Waits until text containing it is visible, within the step timeout. |
+| **wait** | Seconds. | — | Fixed pause, capped at 60 seconds. |
+| **screenshot** | Optional frame name. | — | Saves the first `canvas`, otherwise the page, as a named frame. |
+| **capture** | Regex with one capture group. | Variable name. | Reads the page text, polls up to 30 s, stores the match. |
+| **assert color** | CSS selector of a `<canvas>`. Empty means the first canvas. | Hex color, e.g. `#0d5ea0`. | See [color checks](#color-checks). |
+| **assert data** | API URL the page fetches. | `json.path == expected`. | Fetches inside the page session and compares a JSON field. |
+| **assert response** | Path of the list the app fetches, e.g. `/api/orders`. | One rule: `all status == Pending`, `count >= 1`, or `shown name`. | Checks the list the app itself loaded after the previous step. `all` needs every item to match, `count` compares the item count, `shown` needs the first items' text on the page. Fails when the app made no such request. |
+
+AI generation uses only navigate, click, fill, select, upload, assert, and waitFor. The other five are written or recorded by hand.
+
+## How click targets resolve
+
+A click target is matched against what is **visible**, in this order, taking the **first** match of the first stage that finds one:
+
+1. Button with that exact accessible name
+2. Link with that exact name
+3. Element with that exact text
+4. Case-insensitive match of the full text
+5. Case-insensitive substring
+6. Substring after dropping generic words such as *the*, *button*, *type*
+
+If nothing matches, the render is awaited and the chain runs once more. A failed click reports up to 12 visible buttons and links, which is the fastest way to correct a target.
+
+<Callout type="warn">
+  Matching is **not strict**. If two buttons both contain `Save`, the first in page order is clicked and the step passes. Use a more specific label, or `css:` with a stable selector.
+</Callout>
+
+## Assert conditions
+
+<Shot src="/images/writing-test-steps/assert-conditions.png" alt="The condition dropdown with its six options" width={1000} height={631} />
+
+| Condition | Passes when | Waits? |
+| --- | --- | --- |
+| `visible` (default) | The target text is visible. | Up to the step timeout. |
+| `hidden` | The target text is not visible. | Up to the step timeout. |
+| `contains` | The page text contains the **target** text. | No. |
+| `equals` | The first matching element's text equals the value exactly. | No. |
+| `urlMatches` | The current URL matches the target (case-insensitive regex). | No. |
+| `AI visual check` | A vision model judges the statement in the target against a screenshot. | Settles 2.5 s. Retried once if the judge fails. |
+
+Conditions that do not wait read the page as it is. Put a **waitFor** step before them when content loads asynchronously.
+
+For an AI visual check, naming a frame captured by an earlier **screenshot** step compares against that frame. Screenshots of your page are sent to the vision model; see [Security](/docs/security).
+
+## Color checks
+
+<Shot src="/images/writing-test-steps/region-fields.png" alt="A step with the region fields and the Pick button" width={1672} height={144} />
+
+The check reads pixels from a **`<canvas>` element** (WebGL or 2D) — for example a 3D or design preview. It does not read `<img>` elements or CSS colors. Leave the target empty for the first canvas on the page, or give a CSS selector.
+
+Enter the expected hex color and a region as four numbers — **x, y, w, h** — in percent of the canvas (0–100). **Pick** opens your app in a browser, takes a screenshot, and lets you drag the rectangle.
+
+<Shot src="/images/writing-test-steps/region-picker.png" alt="The region picker window" width={2080} height={449} />
+
+The check samples a 4 × 4 grid in the region and compares **hue** (within 20°) and saturation, polling for up to 30 s so late-loading textures can settle. Brightness is not compared, so two shades of the same hue can both pass.
+
+## Variables
+
+<Shot src="/images/writing-test-steps/credential-chips.png" alt="The username and password variable chips" width={1700} height={87} />
+
+| Variable | Source | Use in |
+| --- | --- | --- |
+| `{{username}}`, `{{password}}` | The environment's credentials. | A step's target or value, as the whole string. |
+| `{{name}}` | A **capture** step's variable. | Later steps. |
+| `{{query:name}}` | A captured value. | The target URL of **assert data**. |
+
+Credentials are replaced with markers: real values do not appear in test definitions, results, or logs. Login runs once per run and the session is reused.

@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import { PrismaService } from "../database/prisma.service";
 import type { AuthenticatedUser } from "../auth/auth.types";
 import { encryptField } from "../common/crypto.util";
@@ -11,6 +12,7 @@ interface CredentialInput {
   submitSelector?: string;
   username?: string;
   password?: string;
+  routeFixtures?: Record<string, Record<string, string>> | null;
 }
 
 @Injectable()
@@ -82,8 +84,10 @@ export class EnvironmentsService {
   private credentialFields(input: CredentialInput) {
     const secret = process.env.JWT_SECRET ?? "";
     const wantsCredentials = input.username !== undefined || input.password !== undefined;
+    const fixtures = input.routeFixtures === undefined ? {} : { routeFixtures: input.routeFixtures ?? Prisma.DbNull };
     if (!wantsCredentials) {
       return {
+        ...fixtures,
         ...(input.loginUrl !== undefined ? { loginUrl: input.loginUrl.trim() || null } : {}),
         ...(input.loginTrigger !== undefined ? { loginTriggerSelector: input.loginTrigger.trim() || null } : {}),
         ...(input.usernameSelector !== undefined ? { usernameSelector: input.usernameSelector.trim() || null } : {}),
@@ -95,6 +99,7 @@ export class EnvironmentsService {
     const username = encryptField(input.username, secret);
     const password = encryptField(input.password, secret);
     return {
+      ...fixtures,
       loginUrl: input.loginUrl?.trim() || null,
       loginTriggerSelector: input.loginTrigger?.trim() || null,
       usernameSelector: input.usernameSelector?.trim() || null,
@@ -107,7 +112,7 @@ export class EnvironmentsService {
 
   private toDto(environment: {
     id: string; name: string; url: string; isDefault: boolean;
-    usernameEnc: string | null; passwordEnc: string | null; loginUrl: string | null;
+    usernameEnc: string | null; passwordEnc: string | null; loginUrl: string | null; routeFixtures: unknown;
   }) {
     return {
       id: environment.id,
@@ -115,7 +120,8 @@ export class EnvironmentsService {
       url: environment.url,
       isDefault: environment.isDefault,
       loginUrl: environment.loginUrl,
-      hasCredentials: Boolean(environment.usernameEnc && environment.passwordEnc)
+      hasCredentials: Boolean(environment.usernameEnc && environment.passwordEnc),
+      routeFixtures: (environment.routeFixtures ?? {}) as Record<string, Record<string, string>>
     };
   }
 

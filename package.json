@@ -6,6 +6,7 @@
     "build": "turbo run build",
     "stripe:catalog": "node scripts/stripe-catalog.js",
     "stripe:seed": "node scripts/stripe-seed.js",
+    "upload:installer": "node --env-file=.env scripts/upload-installer.mjs",
     "dev": "turbo run dev --parallel",
     "lint": "pnpm -r --if-present run lint",
     "test": "pnpm -r --if-present run test",
@@ -19,7 +20,10 @@
       "@prisma/client",
       "@prisma/engines",
       "prisma",
+      "electron",
+      "electron-builder",
       "esbuild",
+      "fumadocs-mdx",
       "msgpackr-extract",
       "unrs-resolver"
     ]

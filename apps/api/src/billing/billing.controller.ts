@@ -3,8 +3,10 @@ import type { RawBodyRequest } from "@nestjs/common";
 import type { FastifyRequest } from "fastify";
 import { BillingService } from "./billing.service";
 import { AuthGuard } from "../auth/auth.guard";
+import { PermissionsGuard, RequirePermission } from "../rbac/permissions.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import type { AuthenticatedUser } from "../auth/auth.types";
+import { PERMISSIONS } from "@ai-qa/domain";
 
 @Controller("v1/billing")
 export class BillingController {
@@ -15,7 +17,8 @@ export class BillingController {
     return this.billingService.publicPlans();
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission(PERMISSIONS.BILLING_VIEW)
   @Get("summary")
   summary(@CurrentUser() user: AuthenticatedUser) {
     return this.billingService.summary(user.organizationId);
@@ -27,10 +30,35 @@ export class BillingController {
     return this.billingService.createCheckout(user, body.planKey, body.interval);
   }
 
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission(PERMISSIONS.BILLING_VIEW)
+  @Get("invoices")
+  invoices(@CurrentUser() user: AuthenticatedUser) {
+    return this.billingService.invoices(user.organizationId);
+  }
+
   @UseGuards(AuthGuard)
-  @Post("portal")
-  portal(@CurrentUser() user: AuthenticatedUser) {
-    return this.billingService.createPortal(user);
+  @Post("payment-method")
+  paymentMethod(@CurrentUser() user: AuthenticatedUser) {
+    return this.billingService.createCardUpdate(user);
+  }
+
+  @UseGuards(AuthGuard)
+  @Post("change-plan")
+  changePlan(@CurrentUser() user: AuthenticatedUser, @Body() body: { planKey: string; interval: string }) {
+    return this.billingService.changePlan(user, body.planKey, body.interval);
+  }
+
+  @UseGuards(AuthGuard)
+  @Post("cancel")
+  cancel(@CurrentUser() user: AuthenticatedUser, @Body() body: { reason?: string }) {
+    return this.billingService.setCancellation(user, true, body?.reason);
+  }
+
+  @UseGuards(AuthGuard)
+  @Post("resume")
+  resume(@CurrentUser() user: AuthenticatedUser) {
+    return this.billingService.setCancellation(user, false);
   }
 
   @Post("webhook/stripe")

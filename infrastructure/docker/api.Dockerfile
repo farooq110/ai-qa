@@ -15,6 +15,9 @@ RUN pnpm install --frozen-lockfile \
  && pnpm --filter @ai-qa/database generate \
  && pnpm --filter "@ai-qa/api..." run build
 
+# Live discovery (ANALYZE) launches Chromium inside the API process
+RUN pnpm --filter @ai-qa/api exec playwright install --with-deps chromium
+
 # Apply migrations then start (bootstrap.service seeds superadmin/plans on boot)
 EXPOSE 4000
 CMD ["sh", "-c", "pnpm --filter @ai-qa/database exec prisma migrate deploy && node apps/api/dist/main.js"]

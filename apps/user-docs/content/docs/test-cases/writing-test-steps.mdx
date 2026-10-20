@@ -1,0 +1,76 @@
+---
+title: Writing Test Steps
+description: Build a test's steps in the editor, with a worked example.
+---
+
+A test is an ordered list of steps. The browser performs them top to bottom and the test passes only if every step succeeds. The **first failing step stops the test**.
+
+This page covers the editor. For every action, how targets resolve, and timeouts, see the [Test steps reference](/docs/reference/test-steps).
+
+## Video
+
+<video
+  controls
+  poster="/videos/writing-test-steps-poster.jpg"
+  width={1000}
+  style={{ borderRadius: 12, border: '1px solid var(--color-fd-border)' }}
+>
+  <source src="/videos/writing-test-steps.mp4" type="video/mp4" />
+</video>
+
+## Open the editor
+
+**New manual test** or **Edit** on any test, both on the Test cases page. **Steps** sits below the test details.
+
+<Shot src="/images/writing-test-steps/open-editor.png" alt="The Test cases page header with the New manual test button highlighted" width={2460} height={203} />
+
+<Shot src="/images/writing-test-steps/editor-full.png" alt="The New manual test editor with the Steps section in the middle" width={1880} height={1991} />
+
+## Anatomy of a step
+
+<Shot src="/images/writing-test-steps/step-anatomy.png" alt="A step row with its controls numbered" width={1692} height={537} />
+
+| # | Control | Does |
+| --- | --- | --- |
+| 1 | Drag handle | Reorder by dragging. |
+| 2 | Position | Execution order. |
+| 3 | Action | What the browser does. |
+| 4 | Target | Where it applies; meaning depends on the action. |
+| 5 | Move arrows | Nudge one position. |
+| 6 | Remove | Delete the step. |
+
+Some actions add a **value** field, a condition dropdown, or region fields.
+
+## Worked example
+
+*Adding a product to the cart updates the cart badge.*
+
+<Shot src="/images/writing-test-steps/worked-example.png" alt="Three finished steps: navigate, click, and assert" width={1692} height={537} />
+
+<Steps>
+  <Step>
+    **navigate** to `/products`. The editor starts with this step.
+  </Step>
+  <Step>
+    **Add step** (defaults to click). Target: `Add to cart`.
+  </Step>
+  <Step>
+    **Add step**, set the action to **assert**, condition `visible`, target `1` (the badge text).
+  </Step>
+</Steps>
+
+## Reordering and inserting
+
+Hover between two rows and click **Insert step**; drag the handle to reorder. **Add step** always appends a click at the bottom.
+
+<Shot src="/images/writing-test-steps/insert-add-step.png" alt="The hover-revealed Insert step button between two rows, with Add step below" width={1756} height={549} />
+
+<Shot src="/images/writing-test-steps/drag-reorder.png" alt="A step row highlighted as the drop target while reordering" width={1756} height={601} />
+
+You can also [record steps in a browser](/docs/test-cases/recording-steps) instead of typing them.
+
+## Saving
+
+<Shot src="/images/writing-test-steps/save-footer.png" alt="The editor footer with the Cancel and Create test case buttons" width={1764} height={158} />
+
+Saving needs a title and a target on every step. New tests are **Pending review**; an edit creates a new version that returns to review.

@@ -1,0 +1,37 @@
+---
+title: Analysis and Generation
+description: What analysis reads, what generation produces, and its limits.
+---
+
+**Analysis** maps what your application can do. **Generation** drafts test candidates from that map. Generation needs an analysis from the last **7 days**.
+
+## Run an analysis
+
+Click **Analyze** on the Overview page or the project card. It runs against the project's default branch and records the commit it covered. Re-run it after meaningful changes land.
+
+Requirements: the project's provider must be connected under [Repository providers](/docs/settings/repository-providers).
+
+## What analysis covers
+
+- **Stack.** React Router and Next.js applications (App Router and Pages Router). Other frameworks are not analyzed.
+- **Files.** `.ts`, `.tsx`, `.js`, and `.jsx` files under the project's root directory. Files of 250 KB or more are skipped. At most **300 files** are read, prioritizing routes and pages, then app entry points, then components.
+- **Output.** Routes, an import graph, and summaries of up to 60 components.
+- **Live discovery.** If the project has an environment, ProoflineQA also opens it in a browser (up to 10 pages) and records headings, buttons, inputs, and navigation. The environment must be reachable from the public internet.
+
+Details on what leaves your repository are on [Security and data handling](/docs/security).
+
+### When no pages are found
+
+Analyze reports how many pages it found. If it finds none, it says so, and **Generate tests** refuses with *"Analysis found no pages in …"* instead of producing an empty run. The usual causes:
+
+- **A monorepo imported at its root.** The analysis reads the whole repository and may land on a backend or a package with no pages. Import the repository again with the app's folder as the **root directory**, for example `apps/web` (see [Importing a repository](/docs/projects/connecting-a-repository)).
+- **An unsupported framework.** Only React Router and Next.js routes are read.
+
+## Generate tests
+
+Click **Regenerate** (or **Generate tests** on the project card). Each draft is saved as **Pending review**.
+
+- Existing tests are never overwritten. A draft whose title matches an existing test in the project is skipped.
+- Choose **Full** from the arrow menu after a large change. It asks for confirmation because it can use more AI tokens.
+- Generation uses your monthly AI token quota (see [Usage and quotas](/docs/billing/usage-and-quotas)). When the AI provider is unavailable, ProoflineQA falls back to simple template tests at low confidence that use no tokens.
+- AI-generated steps use only these actions: navigate, click, fill, select, upload, assert, and waitFor. The rest are written or recorded by hand. See [Test steps reference](/docs/reference/test-steps).

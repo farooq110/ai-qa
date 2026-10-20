@@ -1,0 +1,35 @@
+---
+title: Creating a Manual Test
+description: Write a test by hand, or describe it and let AI draft the first version.
+---
+
+Click **New manual test** on the Test cases page. The test is saved as **Pending review** and must be approved before it runs.
+
+## AI draft
+
+Describe the flow in plain language and press **AI draft** (`Ctrl/Cmd + Enter`). The model fills title, capability, category, priority, route, preconditions, steps, and expected result, and matches modules and tags by name. Nothing is saved until you click **Create test case**; review every field.
+
+## Fields
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| Saving to | Yes | The project the test belongs to. |
+| Title | Yes | What the test checks. |
+| Capability | No | The feature it belongs to. Tests are grouped and reported by capability. |
+| Route / page | No | Where the flow starts, e.g. `/products`. |
+| Category | Yes | See below. Default: Happy path. |
+| Priority | Yes | See below. Default: MEDIUM. |
+| Preconditions | No | One per line. Shown to reviewers in the inspector. |
+| Expected result | No | What a passing run looks like. |
+
+### Categories
+
+Happy path (valid flow), Validation (bad or empty input), Negative (disallowed actions), Boundary (limits and edges), Error handling (backend or network failure), Permission (access control), State change (an action changes app state), Integration (spans features or systems).
+
+### Priorities
+
+CRITICAL (blocks release), HIGH, MEDIUM, LOW (cosmetic or rare).
+
+## Steps and saving
+
+Steps are covered in [Writing test steps](/docs/test-cases/writing-test-steps). Saving needs a title and a **target on every step**. Editing an existing test creates a new version that returns to review.

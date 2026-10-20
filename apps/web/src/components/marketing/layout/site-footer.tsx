@@ -24,7 +24,7 @@ export function SiteFooter() {
         </nav>
       </div>
       <div className="mkt-shell flex flex-col justify-between gap-2 border-t border-line py-6 font-mono text-xs text-muted sm:flex-row">
-        <span>© {new Date().getFullYear()} Proofline</span>
+        <span>© {new Date().getFullYear()} ProoflineQA</span>
         <span>Product screens use demonstration data. Testimonials are placeholders until launch.</span>
       </div>
     </footer>

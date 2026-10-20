@@ -1,0 +1,52 @@
+---
+title: Setting Up CI
+description: Turn on CI for a project, choose branches, and decide what to test against.
+---
+
+CI is configured per project on the **CI / CD** page (the page's title is **CI on deploy**).
+
+## Turning it on
+
+1. Open **CI / CD** in the sidebar.
+2. If you have several projects, pick one with the project dropdown beside **Save**. The subtitle shows the project and its repository.
+3. Tick **Run approved tests when a commit is deployed**.
+4. Choose **what to test against** and which **branches** to test (below).
+5. Click **Save**.
+
+You'll see *"CI is on. The next matching deployment runs your approved tests."* A green **listening** chip appears beside the toggle once ProoflineQA can receive deployments for this repository. A **webhook missing** chip means it can't — see [Troubleshooting](/docs/ci-cd/troubleshooting).
+
+## Settings
+
+| Setting | Applies to | What it does |
+| --- | --- | --- |
+| **Run tests against** | GitHub, GitLab | **The deployed URL** (preview deployments) or **A saved environment** (a fixed URL such as staging). |
+| **Deploy workflow** | GitHub, with *A saved environment* | The GitHub Actions workflow whose success means "the app is deployed", for example `Deploy`. Suggestions come from your repository's workflows. Only this workflow starts a run. |
+| **Branches** | All | Which branches are tested. Pick from the dropdown, or type a pattern such as `release/*` and click **Add**. |
+| **Environment** (per branch) | *A saved environment*, and always on Bitbucket | The [environment](/docs/settings/environments) tested when that branch's pipeline succeeds. |
+| **PR previews** | GitHub, GitLab, with *The deployed URL* | Also tests preview deployments of **any** branch that has an open pull request (GitLab: merge request). The result appears on the pull request. |
+| **Protected deployments** *(optional)* | All | Up to five access headers (name and secret) sent to the tested site so previews behind a login wall can be reached. See [Protected previews](/docs/ci-cd/provider-setup#protected-previews). |
+| **Deployment environment** *(optional)* | GitHub, GitLab, with *The deployed URL* | For repositories that deploy several apps: only deployments whose environment name matches are tested, for example `Preview – web`. Leave empty to test every deployment of a matching branch. |
+
+### Branch patterns
+
+- `main` matches exactly that branch.
+- `*` is a wildcard: `release/*` matches `release/1.2`, and `*` alone matches every branch.
+- Matching ignores upper and lower case.
+
+### Using one repository for several apps
+
+If a monorepo holds several apps, import it once per app with a different **root directory** (see [Connecting a repository](/docs/projects/connecting-a-repository)) and give each project its own **Deployment environment** filter. A deployment is then tested only by the project it belongs to.
+
+## Turning it off
+
+Untick the toggle and click **Save**. For GitLab and Bitbucket, ProoflineQA also removes the webhook it added to your repository. Deleting the project removes it too.
+
+## Saving problems
+
+| Message | What to do |
+| --- | --- |
+| *Pick at least one branch or turn on PR previews* | Add a branch rule (or enable PR previews) before turning CI on. |
+| *Pick the environment to test when `main` passes its pipeline* | With **A saved environment**, give every branch an environment. Add one under Settings if none exists. |
+| *Pick the workflow whose success means the app is deployed* | GitHub with **A saved environment**: enter the **Deploy workflow**. |
+| *Could not add the webhook to …* | GitLab needs **Maintainer** access, Bitbucket **Admin** access, for the account connected in Settings. |
+| *GitHub will not send this repository's deployments yet…* | The Proofline GitHub App needs updated permissions approved — see [Troubleshooting](/docs/ci-cd/troubleshooting). |

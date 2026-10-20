@@ -5,10 +5,10 @@ export type BranchResult = "pass" | "fail" | "env" | "none";
 export const ci = {
   heading: "Every push runs what you approved, at the exact commit.",
   intro:
-    "Your pipeline sends the repository, branch and commit SHA. Proofline validates the organization, pins the commit, and runs the approved snapshot. No generation happens in CI, so a run normally spends zero AI tokens.",
+    "Your pipeline sends the repository, branch and commit SHA. ProoflineQA validates the organization, pins the commit, and runs the approved snapshot. No generation happens in CI, so a run normally spends zero AI tokens.",
   pipeline: [
     { label: "Push", detail: "feature/checkout-v2" },
-    { label: "Pipeline calls Proofline", detail: "GitHub Actions" },
+    { label: "Pipeline calls ProoflineQA", detail: "GitHub Actions" },
     { label: "Validate", detail: "org · billing · permission" },
     { label: "Pin commit", detail: "3f9c2ad" },
     { label: "Run approved snapshot", detail: "142 tests · Playwright" },

@@ -4,6 +4,8 @@ import type { AuthenticatedUser } from "../auth/auth.types";
 import { recordAudit } from "../common/audit";
 import type { TestDefinition } from "@ai-qa/test-dsl";
 import { validateTestDefinition } from "@ai-qa/test-dsl";
+import { PermissionsService } from "../rbac/permissions.service";
+import { PERMISSIONS } from "@ai-qa/domain";
 
 interface CreateManualInput {
   title: string;
@@ -37,18 +39,18 @@ const priorities = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
 
 @Injectable()
 export class TestCasesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly permissions: PermissionsService) {}
 
   async list(user: AuthenticatedUser, projectId: string) {
     await this.assertProjectOwnership(user, projectId);
     return this.prisma.testCase.findMany({
-      where: { projectId },
+      where: { projectId, status: { not: "DRAFT" } },
       include: {
         modules: { include: { module: true } },
         tags: { include: { tag: true } },
         versions: { orderBy: { version: "desc" }, take: 5 }
       },
-      orderBy: { createdAt: "desc" }
+      orderBy: [{ createdAt: "desc" }, { id: "asc" }]
     });
   }
 
@@ -59,30 +61,29 @@ export class TestCasesService {
   async listAcrossProjects(user: AuthenticatedUser, filters: { projectId?: string; provider?: string }) {
     const projects = await this.prisma.project.findMany({
       where: { organizationId: user.organizationId },
-      select: { id: true, name: true, repositoryUrl: true }
+      select: { id: true, name: true, provider: true }
     });
-    const providerOf = (url: string) => /bitbucket\.org/i.test(url) ? "BITBUCKET" : /gitlab/i.test(url) ? "GITLAB" : "GITHUB";
     let candidates = projects;
-    if (filters.provider) candidates = candidates.filter((project) => providerOf(project.repositoryUrl) === filters.provider);
+    if (filters.provider) candidates = candidates.filter((project) => project.provider === filters.provider);
     if (filters.projectId) candidates = candidates.filter((project) => project.id === filters.projectId);
     if (!candidates.length) return [];
 
     const tests = await this.prisma.testCase.findMany({
-      where: { projectId: { in: candidates.map((project) => project.id) } },
+      where: { projectId: { in: candidates.map((project) => project.id) }, status: { not: "DRAFT" } },
       include: {
         modules: { include: { module: true } },
         tags: { include: { tag: true } },
         versions: { orderBy: { version: "desc" }, take: 5 }
       },
-      orderBy: { createdAt: "desc" }
+      orderBy: [{ createdAt: "desc" }, { id: "asc" }]
     });
-    const meta = new Map(candidates.map((project) => [project.id, { projectName: project.name, provider: providerOf(project.repositoryUrl) }]));
+    const meta = new Map(candidates.map((project) => [project.id, { projectName: project.name, provider: project.provider }]));
     return tests.map((test) => ({ ...test, ...(meta.get(test.projectId) ?? { projectName: "Unknown", provider: "GITHUB" }) }));
   }
 
   async createManual(user: AuthenticatedUser, projectId: string, input: CreateManualInput) {
     await this.assertProjectOwnership(user, projectId);
-    if (user.role === "DEVELOPER") throw new ForbiddenException("This role cannot create test cases");
+    await this.permissions.assert(user, PERMISSIONS.TEST_CASES_CREATE);
     const definition = this.buildDefinition(input);
     const moduleIds = [...new Set(input.moduleIds ?? [])];
     const tagIds = [...new Set(input.tagIds ?? [])];
@@ -110,7 +111,7 @@ export class TestCasesService {
 
   async update(user: AuthenticatedUser, projectId: string, testCaseId: string, input: UpdateInput) {
     await this.assertProjectOwnership(user, projectId);
-    if (user.role === "DEVELOPER") throw new ForbiddenException("This role cannot edit test cases");
+    await this.permissions.assert(user, PERMISSIONS.TEST_CASES_EDIT);
     const existing = await this.prisma.testCase.findFirst({ where: { id: testCaseId, projectId } });
     if (!existing) throw new NotFoundException("Test case not found");
     if (existing.status === "ARCHIVED" || existing.status === "REJECTED") throw new BadRequestException("Archived or rejected tests cannot be edited");
@@ -127,7 +128,9 @@ export class TestCasesService {
       expectedResult: input.expectedResult ?? current?.expectedResult ?? ""
     };
     const definition = this.buildDefinition(merged);
-    const nextVersion = existing.version + 1;
+    // Generation, verification and repair write versions 1-3 without bumping TestCase.version: number from the real history.
+    const latest = await this.prisma.testCaseVersion.findFirst({ where: { testCaseId }, orderBy: { version: "desc" }, select: { version: true } });
+    const nextVersion = Math.max(existing.version, latest?.version ?? 0) + 1;
     const statusAfterEdit = existing.status === "APPROVED" ? "PENDING_REVIEW" : existing.status;
 
     // Classification sync: when the caller sends moduleIds/tagIds, replace the
@@ -180,7 +183,7 @@ export class TestCasesService {
 
   async approve(user: AuthenticatedUser, projectId: string, testCaseId: string) {
     await this.assertProjectOwnership(user, projectId);
-    if (user.role === "DEVELOPER") throw new ForbiddenException("This role cannot approve tests");
+    await this.permissions.assert(user, PERMISSIONS.TEST_CASES_APPROVE);
     const testCase = await this.prisma.testCase.findFirst({ where: { id: testCaseId, projectId } });
     if (!testCase) throw new NotFoundException("Test case not found");
     const latestAnalysis = await this.prisma.analysisRun.findFirst({ where: { projectId, status: "COMPLETED" }, orderBy: { completedAt: "desc" } });
@@ -195,7 +198,7 @@ export class TestCasesService {
 
   async reject(user: AuthenticatedUser, projectId: string, testCaseId: string) {
     await this.assertProjectOwnership(user, projectId);
-    if (user.role === "DEVELOPER") throw new ForbiddenException("This role cannot reject tests");
+    await this.permissions.assert(user, PERMISSIONS.TEST_CASES_APPROVE);
     const testCase = await this.prisma.testCase.findFirst({ where: { id: testCaseId, projectId } });
     if (!testCase) throw new NotFoundException("Test case not found");
     const updated = await this.prisma.testCase.update({ where: { id: testCaseId }, data: { status: "REJECTED" }, include: { modules: { include: { module: true } }, tags: { include: { tag: true } } } });
@@ -205,11 +208,11 @@ export class TestCasesService {
 
   async bulkStatus(user: AuthenticatedUser, projectId: string, input: { testCaseIds: string[]; action: "approve" | "reject" | "archive" }) {
     await this.assertProjectOwnership(user, projectId);
-    if (user.role === "DEVELOPER") throw new ForbiddenException("This role cannot change test statuses");
+    await this.permissions.assert(user, PERMISSIONS.TEST_CASES_APPROVE);
     const ids = [...new Set(input.testCaseIds)];
     if (!ids.length) throw new BadRequestException("At least one test case id is required");
     const status = input.action === "approve" ? "APPROVED" : input.action === "reject" ? "REJECTED" : "ARCHIVED";
-    const result = await this.prisma.testCase.updateMany({ where: { id: { in: ids }, projectId }, data: { status } });
+    const result = await this.prisma.testCase.updateMany({ where: { id: { in: ids }, projectId }, data: { status, ...(status === "ARCHIVED" ? { scenarioKey: null } : {}) } });
     await recordAudit(this.prisma, { organizationId: user.organizationId, actorId: user.userId, action: `test.bulk_${input.action}`, targetType: "TestCase", metadata: { count: result.count } });
     return result;
   }
@@ -247,12 +250,12 @@ export class TestCasesService {
    */
   async remove(user: AuthenticatedUser, projectId: string, testCaseId: string) {
     await this.assertProjectOwnership(user, projectId);
-    if (user.role === "DEVELOPER") throw new ForbiddenException("This role cannot delete test cases");
+    await this.permissions.assert(user, PERMISSIONS.TEST_CASES_DELETE);
     const test = await this.prisma.testCase.findFirst({ where: { id: testCaseId, projectId } });
     if (!test) throw new NotFoundException("Test case not found");
     const usage = await this.prisma.executionPlanItem.count({ where: { testCaseId } });
     if (usage > 0) {
-      await this.prisma.testCase.update({ where: { id: testCaseId }, data: { status: "ARCHIVED" } });
+      await this.prisma.testCase.update({ where: { id: testCaseId }, data: { status: "ARCHIVED", scenarioKey: null } });
       await recordAudit(this.prisma, { organizationId: user.organizationId, actorId: user.userId, action: "test.archived_on_delete", targetType: "TestCase", targetId: testCaseId, metadata: { executions: usage } });
       return { deleted: false, archived: true, executions: usage, message: "This test has execution history, so it was archived instead of permanently deleted." };
     }
@@ -263,7 +266,7 @@ export class TestCasesService {
 
   async bulkDelete(user: AuthenticatedUser, projectId: string, testCaseIds: string[]) {
     await this.assertProjectOwnership(user, projectId);
-    if (user.role === "DEVELOPER") throw new ForbiddenException("This role cannot delete test cases");
+    await this.permissions.assert(user, PERMISSIONS.TEST_CASES_DELETE);
     const ids = [...new Set(testCaseIds)];
     if (!ids.length) throw new BadRequestException("At least one test case id is required");
     let deleted = 0;
@@ -271,14 +274,14 @@ export class TestCasesService {
     for (const testCaseId of ids) {
       const usage = await this.prisma.executionPlanItem.count({ where: { testCaseId } });
       if (usage > 0) {
-        await this.prisma.testCase.updateMany({ where: { id: testCaseId, projectId }, data: { status: "ARCHIVED" } });
+        await this.prisma.testCase.updateMany({ where: { id: testCaseId, projectId }, data: { status: "ARCHIVED", scenarioKey: null } });
         archived += 1;
       } else {
         try {
           await this.prisma.testCase.delete({ where: { id: testCaseId } });
           deleted += 1;
         } catch {
-          await this.prisma.testCase.updateMany({ where: { id: testCaseId, projectId }, data: { status: "ARCHIVED" } });
+          await this.prisma.testCase.updateMany({ where: { id: testCaseId, projectId }, data: { status: "ARCHIVED", scenarioKey: null } });
           archived += 1;
         }
       }

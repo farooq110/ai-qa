@@ -1,0 +1,43 @@
+---
+title: How CI Works
+description: Run your approved tests automatically every time a commit is deployed.
+---
+
+With **CI on deploy**, ProoflineQA runs your project's approved tests by itself whenever a new version of your app is deployed — no pipeline scripts, tokens, or webhook URLs to copy around. You connect your repository once, pick the branches you care about, and every deployment of those branches is tested.
+
+## What happens on each deployment
+
+1. Your hosting or pipeline finishes deploying a commit on a branch you selected.
+2. ProoflineQA notices — through the GitHub, GitLab, or Bitbucket connection you already made.
+3. A run is queued with **all approved tests** of the project, pinned to that exact commit.
+4. The result appears on the commit (or pull request) in your provider, and in the **Recent runs** list on the CI / CD page.
+
+Tests that are pending review, rejected, or archived never run in CI.
+
+## Two ways to choose what gets tested
+
+The **Run tests against** setting decides which URL the tests visit:
+
+| Option | Tests visit | Best for |
+| --- | --- | --- |
+| **The deployed URL** | The URL the deployment itself reports — a different one per deployment. | Platforms that create a preview URL per commit: Vercel, Netlify, Render, Railway, or a deploy job that declares an environment URL. |
+| **A saved environment** | The [environment](/docs/settings/environments) you map to each branch — the same URL every time. | Your own staging server or any fixed address. Runs after your pipeline succeeds. |
+
+Bitbucket always uses **A saved environment**, because Bitbucket doesn't report deployment URLs.
+
+<Callout type="info">
+  CI tests the code that was actually deployed. With **The deployed URL**, the result is tied to that exact deployment. With **A saved environment**, ProoflineQA trusts that your pipeline's success means the new version is live — so make the deploy the **last** job of the pipeline.
+</Callout>
+
+## What you need
+
+- A project imported from a connected repository (see [Connecting a repository](/docs/projects/connecting-a-repository)). Projects created before repository import show *"Re-import this repository"* and can't use CI.
+- At least one **approved** test — otherwise runs are recorded as skipped.
+- A deployed app that is reachable from the internet. Tests run from ProoflineQA's servers, so a `localhost` address can't be tested.
+- The **QA** or **Admin** role to change CI settings. Developers can view settings and runs (see [Roles and permissions](/docs/getting-started/roles-and-permissions)).
+
+## Next
+
+- [Set CI up](/docs/ci-cd/setting-up-ci) on the CI / CD page.
+- [Provider setup](/docs/ci-cd/provider-setup): what GitHub, GitLab, and Bitbucket each need.
+- [Results and checks](/docs/ci-cd/results-and-checks): reading runs and the status on your commits.

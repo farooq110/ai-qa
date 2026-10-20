@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@ai-qa/contracts": "workspace:*",
+    "@ai-qa/domain": "workspace:*",
     "@tailwindcss/postcss": "^4.3.3",
     "lucide-react": "^1.52.0",
     "motion": "^14.0.0",

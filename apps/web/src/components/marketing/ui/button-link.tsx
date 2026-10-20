@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { ComponentProps, ReactNode } from "react";
 
 type Variant = "approve" | "secondary" | "ghost";
@@ -15,15 +16,16 @@ type ButtonLinkProps = ComponentProps<"a"> & {
   size?: "md" | "lg";
 };
 
-export function ButtonLink({ variant = "approve", icon, size = "md", className = "", children, ...rest }: ButtonLinkProps) {
+export function ButtonLink({ variant = "approve", icon, size = "md", className = "", href, children, ...rest }: ButtonLinkProps) {
   const sizing = size === "lg" ? "h-12 px-5 text-[15px]" : "h-9 px-3.5 text-sm";
   return (
-    <a
+    <Link
       className={`group inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg font-semibold transition-[background-color,border-color,color,transform] duration-200 ease-out ${sizing} ${variants[variant]} ${className}`}
+      href={href as string}
       {...rest}
     >
       {icon}
       {children}
-    </a>
+    </Link>
   );
 }

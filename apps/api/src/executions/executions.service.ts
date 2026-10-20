@@ -3,7 +3,9 @@ import { PrismaService } from "../database/prisma.service";
 import type { AuthenticatedUser } from "../auth/auth.types";
 import { recordAudit } from "../common/audit";
 import { assertBillingActive, subscriptionContext } from "../common/billing-context";
-import { enqueueExecution } from "../common/queue";
+import { enqueueCiReport, enqueueExecution } from "../common/queue";
+import { PermissionsService } from "../rbac/permissions.service";
+import { PERMISSIONS } from "@ai-qa/domain";
 
 interface CreateExecutionInput {
   testCaseIds?: string[];
@@ -16,10 +18,10 @@ interface CreateExecutionInput {
 
 @Injectable()
 export class ExecutionsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly permissions: PermissionsService) {}
 
   async create(user: AuthenticatedUser, projectId: string, input: CreateExecutionInput) {
-    if (user.role === "DEVELOPER") throw new ForbiddenException("This role cannot start executions");
+    await this.permissions.assert(user, PERMISSIONS.EXECUTIONS_RUN);
     const project = await this.assertProject(user, projectId);
     const context = await subscriptionContext(this.prisma, user.organizationId);
     assertBillingActive(context, "Test execution");
@@ -43,7 +45,7 @@ export class ExecutionsService {
         trigger: input.trigger ?? "DASHBOARD",
         items: { create: selectedIds.map((testCaseId) => ({ testCaseId })) }
       },
-      include: { items: { include: { testCase: { select: { id: true, title: true } } } }, project: { select: { id: true, name: true } } }
+      include: { items: { omit: { stepLog: true }, include: { testCase: { select: { id: true, title: true } } } }, project: { select: { id: true, name: true } } }
     });
     await enqueueExecution(plan.id);
     await recordAudit(this.prisma, {
@@ -74,7 +76,7 @@ export class ExecutionsService {
     await this.assertProject(user, projectId);
     const plans = await this.prisma.executionPlan.findMany({
       where: { projectId, organizationId: user.organizationId },
-      include: { items: { include: { testCase: { select: { id: true, title: true } } } } },
+      include: { items: { omit: { stepLog: true }, include: { testCase: { select: { id: true, title: true } } } } },
       orderBy: { createdAt: "desc" },
       take: 50
     });
@@ -100,6 +102,7 @@ export class ExecutionsService {
     if (!plan) throw new NotFoundException("Execution plan not found");
     if (plan.status !== "QUEUED" && plan.status !== "RUNNING") throw new BadRequestException("Only queued or running executions can be canceled");
     const updated = await this.prisma.executionPlan.update({ where: { id: planId }, data: { status: "CANCELED", completedAt: new Date() } });
+    if (plan.trigger === "CI") await enqueueCiReport({ planId });
     await recordAudit(this.prisma, { organizationId: user.organizationId, actorId: user.userId, action: "execution.canceled", targetType: "ExecutionPlan", targetId: planId });
     return updated;
   }
@@ -108,7 +111,7 @@ export class ExecutionsService {
   async listAcrossProjects(user: AuthenticatedUser, filters: { projectId?: string }) {
     const plans = await this.prisma.executionPlan.findMany({
       where: { organizationId: user.organizationId, ...(filters.projectId ? { projectId: filters.projectId } : {}) },
-      include: { items: { include: { testCase: { select: { id: true, title: true } } } }, project: { select: { id: true, name: true, defaultBranch: true } } },
+      include: { items: { omit: { stepLog: true }, include: { testCase: { select: { id: true, title: true } } } }, project: { select: { id: true, name: true, defaultBranch: true } } },
       orderBy: { createdAt: "desc" },
       take: 50
     });

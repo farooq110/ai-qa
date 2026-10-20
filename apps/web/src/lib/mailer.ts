@@ -4,11 +4,16 @@ import nodemailer from "nodemailer";
 let transporter: ReturnType<typeof nodemailer.createTransport> | null = null;
 
 export function getMailer() {
-  const user = process.env.GMAIL_USER;
-  const pass = process.env.GMAIL_APP_PASSWORD;
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASSWORD;
   if (!user || !pass) return null;
   if (!transporter) {
-    transporter = nodemailer.createTransport({ service: "gmail", auth: { user, pass } });
+    transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST || "smtp.hostinger.com",
+      port: Number(process.env.SMTP_PORT) || 465,
+      secure: (Number(process.env.SMTP_PORT) || 465) === 465,
+      auth: { user, pass }
+    });
   }
-  return { transporter, from: `"Proofline Support" <${user}>`, inbox: process.env.SUPPORT_INBOX_EMAIL || user };
+  return { transporter, from: `"ProoflineQA Support" <${user}>`, inbox: process.env.SUPPORT_INBOX_EMAIL || user };
 }

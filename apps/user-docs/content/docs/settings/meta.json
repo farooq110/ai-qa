@@ -1,0 +1,9 @@
+{
+  "title": "Settings",
+  "defaultOpen": false,
+  "pages": [
+    "repository-providers",
+    "environments",
+    "account"
+  ]
+}

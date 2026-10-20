@@ -1,0 +1,16 @@
+---
+title: Billing Statuses
+description: What each status means and whether generation and runs continue.
+---
+
+The status appears in the Billing page heading and as a badge on Overview.
+
+| Status | Generation and runs |
+| --- | --- |
+| **Trialing**, **Active** | Work normally. |
+| **Payment warning**, **Past due** | **Continue.** A payment issue was detected; fix it in **Manage billing** before it becomes locked. |
+| **Billing locked** | **Blocked.** Unresolved past the grace period. A banner links to Billing. |
+| **No plan** | **Blocked.** No completed subscription. Browsing works. |
+| **Canceled**, **Expired** | **Blocked.** Pick a plan to resume; before a cancelation takes effect you can **Resume subscription**. |
+
+Blocked runs are recorded as **Blocked**; CI runs are reported as skipped with the billing reason. Nothing is deleted — resolve billing and work resumes.

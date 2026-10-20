@@ -1,0 +1,9 @@
+{
+  "title": "Getting Started",
+  "defaultOpen": false,
+  "pages": [
+    "create-an-account",
+    "account-access",
+    "roles-and-permissions"
+  ]
+}

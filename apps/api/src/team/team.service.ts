@@ -4,12 +4,12 @@ import { randomBytes } from "node:crypto";
 import { PrismaService } from "../database/prisma.service";
 import type { AuthenticatedUser } from "../auth/auth.types";
 import { recordAudit } from "../common/audit";
-
-const assignableRoles = ["ADMIN", "QA", "DEVELOPER"] as const;
+import { APP_ROLES, appRoles } from "@ai-qa/domain";
+import { PermissionsService } from "../rbac/permissions.service";
 
 @Injectable()
 export class TeamService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly permissions: PermissionsService) {}
 
   list(user: AuthenticatedUser) {
     return this.prisma.organizationMembership.findMany({
@@ -26,8 +26,8 @@ export class TeamService {
   }
 
   async invite(user: AuthenticatedUser, input: { email: string; displayName: string; role: string; password?: string }) {
-    this.assertAdmin(user);
     const role = this.assertRole(input.role);
+    await this.assertCanAssign(user, role);
     const email = input.email.trim().toLowerCase();
     const existing = await this.prisma.user.findUnique({ where: { email } });
     if (existing) throw new ConflictException("An account with this email already exists");
@@ -38,6 +38,8 @@ export class TeamService {
         email,
         displayName: input.displayName.trim(),
         passwordHash,
+        // The inviting admin vouches for the address; invited members aren't asked to confirm it.
+        emailVerifiedAt: new Date(),
         membership: { create: { organizationId: user.organizationId, role } }
       }
     });
@@ -49,12 +51,13 @@ export class TeamService {
   }
 
   async updateRole(user: AuthenticatedUser, targetUserId: string, role: string) {
-    this.assertAdmin(user);
     const nextRole = this.assertRole(role);
+    await this.assertCanAssign(user, nextRole);
     const membership = await this.prisma.organizationMembership.findUnique({ where: { userId: targetUserId } });
     if (!membership || membership.organizationId !== user.organizationId) throw new NotFoundException("Team member not found in this organization");
-    if (membership.userId === user.userId && nextRole !== "ADMIN") {
-      const adminCount = await this.prisma.organizationMembership.count({ where: { organizationId: user.organizationId, role: "ADMIN" } });
+    await this.assertCanAssign(user, membership.role as APP_ROLES);
+    if (membership.userId === user.userId && nextRole !== APP_ROLES.ADMIN) {
+      const adminCount = await this.prisma.organizationMembership.count({ where: { organizationId: user.organizationId, role: APP_ROLES.ADMIN } });
       if (adminCount <= 1) throw new BadRequestException("The organization must keep at least one admin");
     }
     const updated = await this.prisma.organizationMembership.update({ where: { userId: targetUserId }, data: { role: nextRole } });
@@ -66,12 +69,12 @@ export class TeamService {
   }
 
   async remove(user: AuthenticatedUser, targetUserId: string) {
-    this.assertAdmin(user);
     if (targetUserId === user.userId) throw new BadRequestException("You cannot remove your own account");
     const membership = await this.prisma.organizationMembership.findUnique({ where: { userId: targetUserId } });
     if (!membership || membership.organizationId !== user.organizationId) throw new NotFoundException("Team member not found in this organization");
-    const adminCount = await this.prisma.organizationMembership.count({ where: { organizationId: user.organizationId, role: "ADMIN" } });
-    if (membership.role === "ADMIN" && adminCount <= 1) throw new BadRequestException("The organization must keep at least one admin");
+    await this.assertCanAssign(user, membership.role as APP_ROLES);
+    const adminCount = await this.prisma.organizationMembership.count({ where: { organizationId: user.organizationId, role: APP_ROLES.ADMIN } });
+    if (membership.role === APP_ROLES.ADMIN && adminCount <= 1) throw new BadRequestException("The organization must keep at least one admin");
     await this.prisma.user.delete({ where: { id: targetUserId } });
     await recordAudit(this.prisma, {
       organizationId: user.organizationId, actorId: user.userId, action: "team.member_removed",
@@ -80,12 +83,14 @@ export class TeamService {
     return { removed: true };
   }
 
-  private assertAdmin(user: AuthenticatedUser) {
-    if (user.role !== "ADMIN") throw new ForbiddenException("Only organization admins can manage the team");
+  /** `team:manage` holders may handle QA/DEVELOPER members; only an ADMIN may grant, change or remove ADMIN. */
+  private async assertCanAssign(user: AuthenticatedUser, role: APP_ROLES) {
+    if (role !== APP_ROLES.ADMIN) return;
+    if ((await this.permissions.forUser(user)).role !== APP_ROLES.ADMIN) throw new ForbiddenException("Only organization admins can manage admin accounts");
   }
 
   private assertRole(role: string) {
-    if (!assignableRoles.includes(role as (typeof assignableRoles)[number])) throw new BadRequestException("role must be one of ADMIN, QA, DEVELOPER");
-    return role as (typeof assignableRoles)[number];
+    if (!appRoles.includes(role as APP_ROLES)) throw new BadRequestException(`role must be one of ${appRoles.join(", ")}`);
+    return role as APP_ROLES;
   }
 }

@@ -4,16 +4,31 @@ import Link from "next/link";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
-  Archive, ArrowDown, ArrowUp, Ban, Check, ChevronDown, CircleHelp, Crosshair, FilePlus2, FolderKanban,   GripVertical, Layers, LayoutList, Pencil, PlayCircle,
-  Plus, RotateCcw, Search, Sparkles, Tag, ThumbsUp, Trash2, X, Network, CircleDot
+  Archive, ArrowDown, ArrowUp, Ban, Check, ChevronDown, CircleHelp, Columns3, Crosshair, Download, FilePlus2, FolderKanban, GripVertical, Layers, LayoutList, Pencil, PlayCircle,
+  Lock, Plus, RotateCcw, Search, SlidersHorizontal, Sparkles, Tag, ThumbsUp, Trash2, X, Network, CircleDot
 } from "lucide-react";
+import { RecorderSetupModal } from "@/components/recorder-setup-modal";
 import { BitbucketIcon, GithubIcon, GitlabIcon } from "@/components/brand-icons";
 import { AppShell } from "@/components/app-shell";
+import { RunQueued } from "@/components/run-queued";
 import { RunEnvironmentModal } from "@/components/run-environment-modal";
 import { SearchableSelect } from "@/components/searchable-select";
+import { Select } from "@/components/select";
 import { InfoTooltip } from "@/components/info-tooltip";
-import { api, categoryLabels, fmtRelative, statusClass, statusLabels } from "@/lib/api";
-import { useProjects, useToast } from "@/lib/hooks";
+import { useFitViewport } from "@/components/use-fit-viewport";
+import { api, apiUrl, categoryLabels, fmtRelative, shortSha, statusClass, statusLabels } from "@/lib/api";
+import { can, requireSubscription, useMe, useProjects, useToast } from "@/lib/hooks";
+import { PERMISSIONS } from "@ai-qa/domain";
+
+/**
+ * Hands the proofline-recorder:// link to the OS. Only ever called from a direct user
+ * click (start button, retry, picker) so the browser allows the external navigation;
+ * when the recorder isn't installed the OS shows its own dialog and the inline setup
+ * help appears in the record bar instead.
+ */
+function launchDeepLink(link: string) {
+  window.location.href = link;
+}
 
 interface StepDto { action: string; target: string; value?: string; condition?: string; region?: { x: number; y: number; w: number; h: number }; tolerance?: number }
 interface DefinitionDto { capability?: string; category?: string; preconditions?: string[]; steps?: StepDto[]; expectedResult?: string }
@@ -29,30 +44,44 @@ interface Classifications { modules: Array<{ id: string; name: string }>; tags: 
 
 const categoryOptions = Object.keys(categoryLabels);
 const priorityOptions = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
-const statusOptions = ["PENDING_REVIEW", "APPROVED", "NEEDS_REVIEW", "REJECTED", "ARCHIVED"];
+const statusOptions = ["PENDING_REVIEW", "NEEDS_REVIEW", "APPROVED", "REJECTED", "ARCHIVED"];
+/** Lanes follow the review lifecycle; rejected and archived share the closed lane. */
+const lanes: Array<{ key: string; label: string; statuses: string[] }> = [
+  { key: "PENDING_REVIEW", label: "Pending review", statuses: ["PENDING_REVIEW"] },
+  { key: "NEEDS_REVIEW", label: "Needs review", statuses: ["NEEDS_REVIEW"] },
+  { key: "APPROVED", label: "Approved", statuses: ["APPROVED"] },
+  { key: "CLOSED", label: "Rejected / archived", statuses: ["REJECTED", "ARCHIVED"] }
+];
+type View = "lanes" | "table" | "grouped";
+const stepActions = ["navigate", "click", "fill", "select", "upload", "assert", "waitFor", "wait", "screenshot", "capture", "assertColor", "assertData", "assertResponse"].map((action) => ({
+  value: action,
+  label: action === "waitFor" ? "waitFor (text)" : action === "wait" ? "wait (seconds)" : action === "assertColor" ? "assert color" : action === "assertData" ? "assert data" : action === "assertResponse" ? "assert response" : action === "capture" ? "capture (variable)" : action
+}));
 const providerOptions = [
   { value: "GITHUB", label: "GitHub" },
   { value: "BITBUCKET", label: "Bitbucket" },
   { value: "GITLAB", label: "GitLab" }
 ];
 const providerLabels: Record<string, string> = { GITHUB: "GitHub", BITBUCKET: "Bitbucket", GITLAB: "GitLab" };
-const providerOf = (url: string) => /bitbucket\.org/i.test(url) ? "BITBUCKET" : /gitlab/i.test(url) ? "GITLAB" : "GITHUB";
 
 function TestCasesInner() {
+  const me = useMe();
+  const canCreate = can(me, PERMISSIONS.TEST_CASES_CREATE), canEdit = can(me, PERMISSIONS.TEST_CASES_EDIT), canDelete = can(me, PERMISSIONS.TEST_CASES_DELETE), canApprove = can(me, PERMISSIONS.TEST_CASES_APPROVE), canRun = can(me, PERMISSIONS.EXECUTIONS_RUN);
   const { projects, selected } = useProjects();
   const { toast, notify } = useToast();
   const searchParams = useSearchParams();
   const [tests, setTests] = useState<TestRow[] | null>(null);
   const [classifications, setClassifications] = useState<Classifications>({ modules: [], tags: [] });
   const [projectFilter, setProjectFilter] = useState(searchParams.get("projectId") ?? "");
-  const [providerFilter, setProviderFilter] = useState("GITHUB");
+  const [providerFilter, setProviderFilter] = useState("");
   // Layout choice persists across navigation and reloads.
   const viewKey = "proofline.testCasesView";
-  const [view, setView] = useState<"table" | "grouped">("table");
+  const [view, setView] = useState<View>("lanes");
   useEffect(() => {
-    if (window.localStorage.getItem(viewKey) === "grouped") setView("grouped");
+    const stored = window.localStorage.getItem(viewKey);
+    if (stored === "grouped" || stored === "table") setView(stored);
   }, []);
-  function changeView(next: "table" | "grouped") {
+  function changeView(next: View) {
     setView(next);
     window.localStorage.setItem(viewKey, next);
   }
@@ -66,18 +95,22 @@ function TestCasesInner() {
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [editor, setEditor] = useState<{ mode: "create" } | { mode: "edit"; test: TestRow } | null>(null);
   const [createProjectId, setCreateProjectId] = useState("");
-  const [detail, setDetail] = useState<TestRow | null>(null);
+  // ?test=<id> (from the overview's review queue) opens that test in the inspector.
+  const [detailId, setDetailId] = useState<string | null>(searchParams.get("test"));
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const searchRef = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [queued, setQueued] = useState<number | null>(null);
   const [pendingRun, setPendingRun] = useState<{ projectId: string; ids: string[] } | null>(null);
 
-  const activeProjectId = editor?.mode === "create" ? (createProjectId || projectFilter || selected?.id || "") : (projectFilter || selected?.id || "");
+  const activeProjectId = editor?.mode === "create" ? (createProjectId || projectFilter || selected?.id || "") : (editor?.mode === "edit" ? editor.test.projectId : projectFilter || selected?.id || "");
   const createTargetOptions = (projects ?? []).map((project) => ({ value: project.id, label: project.name }));
   const projectNameOf = (id: string) => projects?.find((project) => project.id === id)?.name ?? "Unknown project";
 
   // Cascading filters: the project dropdown only offers projects whose repository matches the selected provider.
   const visibleProjects = useMemo(() => {
     const all = projects ?? [];
-    return providerFilter ? all.filter((project) => providerOf(project.repositoryUrl) === providerFilter) : all;
+    return providerFilter ? all.filter((project) => project.provider === providerFilter) : all;
   }, [projects, providerFilter]);
 
   useEffect(() => {
@@ -104,18 +137,28 @@ function TestCasesInner() {
   useEffect(() => { void reload(); }, [reload]);
   useEffect(() => { setChecked(new Set()); }, [projectFilter, providerFilter, statusFilter, categoryFilter, moduleFilter, tagFilter, search]);
 
-  const filtered = useMemo(() => {
+  // Everything except the status filter: the lifecycle tabs count across this set.
+  const scoped = useMemo(() => {
     if (!tests) return [];
     const needle = search.trim().toLowerCase();
     return tests.filter((test) => {
-      if (statusFilter && test.status !== statusFilter) return false;
       if (categoryFilter && test.category !== categoryFilter) return false;
       if (moduleFilter && !test.modules.some((entry) => entry.module.id === moduleFilter)) return false;
       if (tagFilter && !test.tags.some((entry) => entry.tag.id === tagFilter)) return false;
       if (needle && !(`${test.title} ${test.capability ?? ""} ${test.route ?? ""} ${test.projectName ?? ""}`.toLowerCase().includes(needle))) return false;
       return true;
     });
-  }, [tests, statusFilter, categoryFilter, moduleFilter, tagFilter, search]);
+  }, [tests, categoryFilter, moduleFilter, tagFilter, search]);
+  const filtered = useMemo(() => statusFilter ? scoped.filter((test) => test.status === statusFilter) : scoped, [scoped, statusFilter]);
+  const statusCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const test of scoped) counts[test.status] = (counts[test.status] ?? 0) + 1;
+    return counts;
+  }, [scoped]);
+  const visibleLanes = useMemo(() => statusFilter ? lanes.filter((lane) => lane.statuses.includes(statusFilter)) : lanes, [statusFilter]);
+  // Keyboard order follows what is on screen: lane by lane, or the list order.
+  const ordered = useMemo(() => view === "lanes" ? visibleLanes.flatMap((lane) => filtered.filter((test) => lane.statuses.includes(test.status))) : filtered, [view, visibleLanes, filtered]);
+  const detail = (detailId && tests?.find((test) => test.id === detailId)) || null;
 
   function groupByProject(ids: string[]) {
     const groups = new Map<string, string[]>();
@@ -129,10 +172,13 @@ function TestCasesInner() {
 
   async function act(label: string, fn: () => Promise<unknown>, success: string) {
     setBusy(label);
-    try { await fn(); notify(success, "success"); await reload(); }
-    catch (error) { notify(error instanceof Error ? error.message : "The action failed", "error"); }
+    try { await fn(); notify(success, "success"); await reload(); return true; }
+    catch (error) { notify(error instanceof Error ? error.message : "The action failed", "error"); return false; }
     finally { setBusy(null); }
   }
+
+  // A toast alone is easy to miss; keep a visible "queued" message until dismissed.
+  const showQueued = (count: number) => { setQueued(count); document.querySelector(".workspace")?.scrollTo({ top: 0, behavior: "smooth" }); };
 
   function deleteOne(test: TestRow) {
     if (!window.confirm(`Delete "${test.title}"? Tests with execution history are archived instead of being permanently removed.`)) return;
@@ -168,24 +214,27 @@ function TestCasesInner() {
   const selectedApproved = [...checked].filter((id) => filtered.find((test) => test.id === id)?.status === "APPROVED");
 
   function runSelected() {
+    if (requireSubscription(me)) return;
     const ids = selectedApproved;
     if (!ids.length) { notify("Select approved tests to run — pending or rejected tests cannot execute.", "error"); return; }
     const groups = groupByProject(ids);
     if (groups.size === 1) {
       const [projectId, projectIds] = [...groups][0]!;
+      let needsEnvironment = false;
       void act("run", async () => {
         try {
           await api(`/v1/projects/${projectId}/executions`, { method: "POST", body: { testCaseIds: projectIds } });
         } catch (cause) {
           const message = cause instanceof Error ? cause.message : "";
           if (/no environment/i.test(message)) {
+            needsEnvironment = true;
             setPendingRun({ projectId, ids: projectIds ?? [] });
             notify("Pick a target URL for this project's first run.", "info");
             return;
           }
           throw cause;
         }
-      }, `${projectIds!.length} approved tests queued for execution.`).then(() => setChecked(new Set()));
+      }, `${projectIds!.length} approved tests queued for execution.`).then((ok) => { setChecked(new Set()); if (ok && !needsEnvironment) showQueued(projectIds!.length); });
       return;
     }
     void act("run", async () => {
@@ -197,7 +246,7 @@ function TestCasesInner() {
         const first = failures[0] as PromiseRejectedResult;
         throw new Error(`${failures.length} of ${groups.size} project runs failed — ${first.reason instanceof Error ? first.reason.message : "check each project's environment"}`);
       }
-    }, `Queued runs across ${groups.size} projects.`);
+    }, `Queued runs across ${groups.size} projects.`).then((ok) => { if (ok) showQueued(ids.length); });
     setChecked(new Set());
   }
 
@@ -211,6 +260,45 @@ function TestCasesInner() {
     return counts;
   }, [tests]);
 
+  // Review from the keyboard: j/k move, a approves, r rejects, e edits, x toggles selection, / searches, Esc closes.
+  const keyState = useRef({ ordered, detail, busy, blocked: false });
+  keyState.current = { ordered, detail, busy, blocked: Boolean(editor || classificationsOpen || pendingRun) };
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      const { ordered: list, detail: current, busy: working, blocked } = keyState.current;
+      const target = event.target as HTMLElement | null;
+      if (blocked || event.metaKey || event.ctrlKey || event.altKey) return;
+      if (target && (target.closest("input, textarea, select, [contenteditable='true']"))) {
+        if (event.key === "Escape" && target === searchRef.current) searchRef.current?.blur();
+        return;
+      }
+      const index = current ? list.findIndex((test) => test.id === current.id) : -1;
+      if (event.key === "/") { event.preventDefault(); searchRef.current?.focus(); return; }
+      if (event.key === "j" || event.key === "ArrowDown" && current) { const next = list[Math.min(index + 1, list.length - 1)]; if (next) { event.preventDefault(); setDetailId(next.id); } return; }
+      if (event.key === "k" || event.key === "ArrowUp" && current) { const prev = list[Math.max(index - 1, 0)]; if (prev) { event.preventDefault(); setDetailId(prev.id); } return; }
+      if (event.key === "Escape" && current) { setDetailId(null); return; }
+      if (!current || working) return;
+      if (event.key === "a" && canApprove && current.status !== "APPROVED") void approveOne(current);
+      else if (event.key === "r" && canApprove && current.status !== "REJECTED" && current.status !== "ARCHIVED") void rejectOne(current);
+      else if (event.key === "e" && canEdit) setEditor({ mode: "edit", test: current });
+      else if (event.key === "x") setChecked((previous) => { const next = new Set(previous); if (next.has(current.id)) next.delete(current.id); else next.add(current.id); return next; });
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  useEffect(() => {
+    if (detailId) document.querySelector(`[data-test-id="${detailId}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [detailId, view]);
+
+  function toggleChecked(id: string, on: boolean) {
+    setChecked((previous) => {
+      const next = new Set(previous);
+      if (on) next.add(id); else next.delete(id);
+      return next;
+    });
+  }
+
   const allChecked = filtered.length > 0 && filtered.every((test) => checked.has(test.id));
   const scopeLabel = projectFilter ? projectNameOf(projectFilter) : "All projects";
   const checkedGroups = groupByProject([...checked]);
@@ -219,101 +307,144 @@ function TestCasesInner() {
     <AppShell activePath="/test-cases">
       <header className="page-header">
         <div>
-          <p className="eyebrow">TEST LIBRARY</p>
           <h1>Test cases</h1>
-          <p className="muted">{scopeLabel} · {filtered.length} of {tests?.length ?? 0} tests shown</p>
+          <p className="meta"><strong>{scopeLabel}</strong>{filtered.length} of {tests?.length ?? 0} shown</p>
         </div>
         <div className="heading-actions">
-          <button className="secondary-button" onClick={() => setClassificationsOpen(true)}><Layers size={16} />Modules &amp; tags</button>
-          <button className="secondary-button" onClick={() => { setCreateProjectId(projectFilter || selected?.id || ""); setEditor({ mode: "create" }); }}><FilePlus2 size={16} />New manual test</button>
-          <button className="primary-button" onClick={runSelected} disabled={checked.size === 0 || busy !== null}><PlayCircle size={17} />Run selected</button>
+          <button className="secondary-button" onClick={() => setClassificationsOpen(true)}><Layers size={14} />Modules &amp; tags</button>
+          {canCreate && <button className="secondary-button" onClick={() => { setCreateProjectId(projectFilter || selected?.id || ""); setEditor({ mode: "create" }); }}><FilePlus2 size={14} />New manual test</button>}
+          {canRun && <button className="run-button" onClick={runSelected} disabled={checked.size === 0 || busy !== null}><PlayCircle size={14} />Run selected{selectedApproved.length ? ` (${selectedApproved.length})` : ""}</button>}
         </div>
       </header>
 
-      {!projects ? <section className="loading-state">Loading…</section> : <>
-        <section className="toolbar" aria-label="Filters">
-          <label className="search"><Search size={16} /><input placeholder="Search title, project, capability…" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
+      {queued !== null && <RunQueued count={queued} onClose={() => setQueued(null)} />}
+
+      {!projects ? <LibrarySkeleton /> : <>
+        <nav className="lifecycle-tabs" aria-label="Filter by review status">
+          <button type="button" aria-pressed={statusFilter === ""} onClick={() => setStatusFilter("")}><span><i />All</span><strong>{scoped.length}</strong></button>
+          {statusOptions.map((status) => (
+            <button type="button" key={status} aria-pressed={statusFilter === status} onClick={() => setStatusFilter(statusFilter === status ? "" : status)}><span><i className={`t-${statusClass(status)}`} />{statusLabels[status]}</span><strong>{statusCounts[status] ?? 0}</strong></button>
+          ))}
+        </nav>
+
+        <section className={filtersOpen ? "toolbar open" : "toolbar"} aria-label="Filters">
+          <label className="search"><Search size={14} /><input ref={searchRef} placeholder="Search title, capability, route…" value={search} onChange={(event) => setSearch(event.target.value)} aria-label="Search tests" /><kbd>/</kbd></label>
+          <button type="button" className="secondary-button filters-toggle" aria-expanded={filtersOpen} onClick={() => setFiltersOpen((open) => !open)}><SlidersHorizontal size={14} />Filters{[projectFilter, providerFilter, categoryFilter, moduleFilter, tagFilter].filter(Boolean).length ? ` · ${[projectFilter, providerFilter, categoryFilter, moduleFilter, tagFilter].filter(Boolean).length}` : ""}</button>
           <SearchableSelect value={projectFilter} onChange={setProjectFilter} placeholder="All projects" ariaLabel="Project filter" options={visibleProjects.map((project) => ({ value: project.id, label: project.name }))} />
           <span className="brand-switch" role="group" aria-label="Repository provider">
-            <button type="button" className={providerFilter === "" ? "seg on" : "seg"} onClick={() => setProviderFilter("")}>All</button>
+            <button type="button" className={providerFilter === "" ? "seg on" : "seg"} onClick={() => setProviderFilter("")} aria-pressed={providerFilter === ""}>All</button>
             {providerOptions.map((provider) => (
-              <button type="button" key={provider.value} className={providerFilter === provider.value ? "seg on " + provider.value.toLowerCase() : "seg " + provider.value.toLowerCase()} onClick={() => setProviderFilter(provider.value)} aria-pressed={providerFilter === provider.value}>
+              <button type="button" key={provider.value} className={providerFilter === provider.value ? "seg on" : "seg"} onClick={() => setProviderFilter(provider.value)} aria-pressed={providerFilter === provider.value} title={provider.label}>
                 {provider.value === "GITHUB" ? <GithubIcon size={13} /> : provider.value === "BITBUCKET" ? <BitbucketIcon size={13} /> : <GitlabIcon size={13} />}
                 {provider.label}
               </button>
             ))}
           </span>
-          <span className="view-toggle" role="group" aria-label="Layout">
-            <button type="button" className={view === "table" ? "seg on" : "seg"} onClick={() => changeView("table")} aria-pressed={view === "table"}><LayoutList size={13} />Table</button>
-            <button type="button" className={view === "grouped" ? "seg on" : "seg"} onClick={() => changeView("grouped")} aria-pressed={view === "grouped"}><Network size={13} />By module</button>
-          </span>
-          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Status filter">
-            <option value="">All statuses</option>
-            {statusOptions.map((status) => <option key={status} value={status}>{statusLabels[status]}</option>)}
-          </select>
-          <select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} aria-label="Category filter">
-            <option value="">All categories</option>
-            {categoryOptions.map((category) => <option key={category} value={category}>{categoryLabels[category]}</option>)}
-          </select>
+          <Select value={categoryFilter} onChange={setCategoryFilter} ariaLabel="Category filter" options={[{ value: "", label: "All categories" }, ...categoryOptions.map((category) => ({ value: category, label: categoryLabels[category] }))]} />
           <SearchableSelect value={moduleFilter} onChange={setModuleFilter} placeholder="All modules" ariaLabel="Module filter" options={classifications.modules.map((module) => ({ value: module.id, label: module.name }))} />
           <SearchableSelect value={tagFilter} onChange={setTagFilter} placeholder="All tags" ariaLabel="Tag filter" options={classifications.tags.map((tag) => ({ value: tag.id, label: tag.name }))} />
           {(projectFilter || providerFilter || statusFilter || categoryFilter || moduleFilter || tagFilter || search) && (
-            <button className="text-button" onClick={() => { setProjectFilter(""); setProviderFilter(""); setStatusFilter(""); setCategoryFilter(""); setModuleFilter(""); setTagFilter(""); setSearch(""); }}><RotateCcw size={14} />Reset</button>
+            <button className="text-button" onClick={() => { setProjectFilter(""); setProviderFilter(""); setStatusFilter(""); setCategoryFilter(""); setModuleFilter(""); setTagFilter(""); setSearch(""); }}><RotateCcw size={13} />Reset</button>
           )}
+          <span className="view-toggle" role="group" aria-label="Layout" style={{ marginLeft: "auto" }}>
+            <button type="button" className={view === "lanes" ? "seg on" : "seg"} onClick={() => changeView("lanes")} aria-pressed={view === "lanes"}><Columns3 size={13} />Lanes</button>
+            <button type="button" className={view === "table" ? "seg on" : "seg"} onClick={() => changeView("table")} aria-pressed={view === "table"}><LayoutList size={13} />Table</button>
+            <button type="button" className={view === "grouped" ? "seg on" : "seg"} onClick={() => changeView("grouped")} aria-pressed={view === "grouped"}><Network size={13} />By module</button>
+          </span>
         </section>
 
         {checked.size > 0 && (
           <section className="bulk-bar" aria-label="Bulk actions">
             <strong>{checked.size} selected{checkedGroups.size > 1 ? ` across ${checkedGroups.size} projects` : ""}</strong>
-            <button className="mini-button" onClick={() => bulkAction("approve")} disabled={busy !== null}><ThumbsUp size={14} />Approve</button>
-            <button className="mini-button danger" onClick={() => bulkAction("reject")} disabled={busy !== null}><Ban size={14} />Reject</button>
-            <button className="mini-button" onClick={() => bulkAction("archive")} disabled={busy !== null}><Archive size={14} />Archive</button>
-            <button className="mini-button danger" onClick={bulkDelete} disabled={busy !== null}><Trash2 size={14} />Delete</button>
+            {canApprove && <button className="mini-button" onClick={() => bulkAction("approve")} disabled={busy !== null}><ThumbsUp size={13} />Approve</button>}
+            {canApprove && <button className="mini-button danger" onClick={() => bulkAction("reject")} disabled={busy !== null}><Ban size={13} />Reject</button>}
+            {canApprove && <button className="mini-button" onClick={() => bulkAction("archive")} disabled={busy !== null}><Archive size={13} />Archive</button>}
+            {canDelete && <button className="mini-button danger" onClick={bulkDelete} disabled={busy !== null}><Trash2 size={13} />Delete</button>}
             <span className="bulk-sep" />
             <BulkClassify groups={[...checkedGroups]} classifications={classifications} onDone={() => reload()} disabled={busy !== null} />
-            <button className="mini-button ghost" onClick={() => setChecked(new Set())}><X size={14} />Clear</button>
+            <button className="mini-button ghost" onClick={() => setChecked(new Set())}><X size={13} />Clear</button>
           </section>
         )}
 
-        {!tests ? <section className="loading-state">Loading test cases…</section>
-          : filtered.length === 0 ? <section className="empty-state"><h2>No matching tests</h2><p>Adjust the filters, or generate tests from a repository analysis.</p>{projects.length === 0 && <div><Link className="primary-button" href="/projects">Go to projects</Link></div>}</section>
-          : view === "grouped" ? <ModuleGroups tests={filtered} collapsed={collapsed} setCollapsed={setCollapsed} checked={checked} setChecked={setChecked} busy={busy} onDetail={setDetail} onApprove={approveOne} onReject={rejectOne} onEdit={(test) => setEditor({ mode: "edit", test })} onDelete={deleteOne} allChecked={allChecked} onSelectAll={() => setChecked(allChecked ? new Set() : new Set(filtered.map((test) => test.id)))} />
-          : <section className="library">
-            <div className="library-head">
-              <label className="check-all"><input type="checkbox" checked={allChecked} onChange={(event) => setChecked(event.target.checked ? new Set(filtered.map((test) => test.id)) : new Set())} />Select all</label>
-              <span>Test</span><span>Status</span><span>Priority</span><span>Project</span><span>Classifications</span><span>Actions</span>
-            </div>
-            {filtered.map((test) => (
-              <article className="library-row" key={test.id}>
-                <label><input type="checkbox" checked={checked.has(test.id)} onChange={(event) => {
-                  const next = new Set(checked);
-                  if (event.target.checked) next.add(test.id); else next.delete(test.id);
-                  setChecked(next);
-                }} /></label>
-                <button className="test-title" onClick={() => setDetail(test)}>
-                  <strong>{test.title}</strong>
-                  <small>{[test.capability, test.category ? categoryLabels[test.category] ?? test.category : null, test.route].filter(Boolean).join(" · ")}{test.source === "MANUAL" ? " · manual" : ` · v${test.version}`}</small>
-                </button>
-                <span className={`status ${statusClass(test.status)}`}>{statusLabels[test.status] ?? test.status}</span>
-                <span className={`priority ${test.priority.toLowerCase()}`}>{test.priority}</span>
-                <span className="project-cell">
-                  <span className="project-cell-name"><FolderKanban size={12} />{test.projectName ?? projectNameOf(test.projectId)}</span>
-                  {test.provider && <span className={`provider-badge ${test.provider.toLowerCase()}`}>{test.provider === "GITHUB" ? <GithubIcon size={10} /> : test.provider === "BITBUCKET" ? <BitbucketIcon size={10} /> : <GitlabIcon size={10} />}{providerLabels[test.provider] ?? test.provider}</span>}
-                </span>
-                <span className="chips">
-                  {test.modules.map((entry) => <span className="chip module" key={entry.module.id}><Layers size={11} />{entry.module.name}</span>)}
-                  {test.tags.map((entry) => <span className="chip tag" key={entry.tag.id}><Tag size={11} />{entry.tag.name}</span>)}
-                  {test.modules.length + test.tags.length === 0 && <small className="dim">—</small>}
-                </span>
-                <span className="row-actions">
-                  {test.status !== "APPROVED" && <button className="mini-button" title="Approve" onClick={() => approveOne(test)} disabled={busy !== null}><ThumbsUp size={13} /></button>}
-                  {test.status !== "REJECTED" && test.status !== "ARCHIVED" && <button className="mini-button danger" title="Reject" onClick={() => rejectOne(test)} disabled={busy !== null}><Ban size={13} /></button>}
-                  <button className="mini-button ghost" title="Edit (creates a new version)" onClick={() => setEditor({ mode: "edit", test })} disabled={busy !== null}><Pencil size={13} /></button>
-                  <button className="mini-button danger" title="Delete" onClick={() => deleteOne(test)} disabled={busy !== null}><Trash2 size={13} /></button>
-                </span>
-              </article>
-            ))}
-          </section>}
+        {!tests ? <LibrarySkeleton rowsOnly />
+          : filtered.length === 0 ? <section className="empty-state"><h2>{tests.length === 0 ? "No test cases yet" : "No tests match these filters"}</h2><p>{tests.length === 0 ? "Analyze a project and generate candidates, or write a manual test. Every test waits for approval before it can run." : "Clear a filter or pick another lifecycle stage."}</p>{projects.length === 0 && <div><Link className="primary-button" href="/projects">Go to projects</Link></div>}</section>
+          : <div className={detail ? "library-frame inspecting" : "library-frame"}>
+            {view === "lanes" ? (
+              <section className="lanes" aria-label="Tests by review stage" style={{ "--lanes": visibleLanes.length } as React.CSSProperties}>
+                {visibleLanes.map((lane) => {
+                  const laneTests = filtered.filter((test) => lane.statuses.includes(test.status));
+                  const laneChecked = laneTests.length > 0 && laneTests.every((test) => checked.has(test.id));
+                  return (
+                    <div className="lane" data-lane={lane.key} key={lane.key}>
+                      <div className="lane-head">
+                        <input type="checkbox" checked={laneChecked} disabled={laneTests.length === 0} onChange={() => setChecked((current) => { const next = new Set(current); laneTests.forEach((test) => laneChecked ? next.delete(test.id) : next.add(test.id)); return next; })} aria-label={`Select all in ${lane.label}`} />
+                        <i aria-hidden /><strong>{lane.label}</strong><span className="num">{laneTests.length}</span>
+                      </div>
+                      <div className="lane-body">
+                        {laneTests.length === 0 ? <div className="lane-empty">Nothing here</div> : laneTests.map((test) => (
+                          <div className={`lane-row${detailId === test.id ? " selected" : ""}${checked.has(test.id) ? " checked" : ""}`} key={test.id} data-test-id={test.id} onClick={() => setDetailId(test.id)}>
+                            <label onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={checked.has(test.id)} onChange={(event) => toggleChecked(test.id, event.target.checked)} aria-label={`Select ${test.title}`} /></label>
+                            <button type="button" className="lane-copy" aria-pressed={detailId === test.id}>
+                              <strong>{test.title}</strong>
+                              <span className="lane-meta">
+                                {lane.key === "CLOSED" && <span className={`status ${statusClass(test.status)}`}>{statusLabels[test.status]}</span>}
+                                <span className={`priority ${test.priority.toLowerCase()}`}>{test.priority}</span>
+                                {test.category && <span>{categoryLabels[test.category] ?? test.category}</span>}
+                                <span>{test.source === "MANUAL" ? "manual" : `v${test.version}`}</span>
+                              </span>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </section>
+            ) : view === "grouped" ? <ModuleGroups tests={filtered} collapsed={collapsed} setCollapsed={setCollapsed} checked={checked} setChecked={setChecked} busy={busy} selectedId={detailId} onDetail={(test) => setDetailId(test.id)} onApprove={approveOne} onReject={rejectOne} onEdit={(test) => setEditor({ mode: "edit", test })} onDelete={deleteOne} allChecked={allChecked} onSelectAll={() => setChecked(allChecked ? new Set() : new Set(filtered.map((test) => test.id)))} />
+            : <section className="library">
+              <div className="library-head">
+                <label className="check-all"><input type="checkbox" checked={allChecked} onChange={(event) => setChecked(event.target.checked ? new Set(filtered.map((test) => test.id)) : new Set())} aria-label="Select all" />Select all</label>
+                <span>test</span><span>status</span><span>priority</span><span>project</span><span>modules · tags</span><span style={{ textAlign: "right" }}>actions</span>
+              </div>
+              {filtered.map((test) => (
+                <article className={`library-row${detailId === test.id ? " selected" : ""}${checked.has(test.id) ? " checked" : ""}`} key={test.id} data-test-id={test.id}>
+                  <label><input type="checkbox" checked={checked.has(test.id)} onChange={(event) => toggleChecked(test.id, event.target.checked)} aria-label={`Select ${test.title}`} /></label>
+                  <button className="test-title" onClick={() => setDetailId(test.id)} aria-pressed={detailId === test.id}>
+                    <strong>{test.title}</strong>
+                    <small>{[test.capability, test.category ? categoryLabels[test.category] ?? test.category : null, test.route].filter(Boolean).join(" · ")}{test.source === "MANUAL" ? " · manual" : ` · v${test.version}`}</small>
+                  </button>
+                  <span className={`status ${statusClass(test.status)}`}>{statusLabels[test.status] ?? test.status}</span>
+                  <span className={`priority ${test.priority.toLowerCase()}`}>{test.priority}</span>
+                  <span className="project-cell">
+                    <span className="project-cell-name"><FolderKanban size={12} />{test.projectName ?? projectNameOf(test.projectId)}</span>
+                    {test.provider && <span className="provider-badge">{test.provider === "GITHUB" ? <GithubIcon size={10} /> : test.provider === "BITBUCKET" ? <BitbucketIcon size={10} /> : <GitlabIcon size={10} />}{providerLabels[test.provider] ?? test.provider}</span>}
+                  </span>
+                  <span className="chips">
+                    {test.modules.map((entry) => <span className="chip module" key={entry.module.id}><Layers size={10} />{entry.module.name}</span>)}
+                    {test.tags.map((entry) => <span className="chip tag" key={entry.tag.id}>#{entry.tag.name}</span>)}
+                    {test.modules.length + test.tags.length === 0 && <small className="dim">—</small>}
+                  </span>
+                  <span className="row-actions">
+                    {canApprove && test.status !== "APPROVED" && <button className="mini-button approve" title="Approve" aria-label={`Approve ${test.title}`} onClick={() => approveOne(test)} disabled={busy !== null}><ThumbsUp size={13} /></button>}
+                    {canApprove && test.status !== "REJECTED" && test.status !== "ARCHIVED" && <button className="mini-button danger" title="Reject" aria-label={`Reject ${test.title}`} onClick={() => rejectOne(test)} disabled={busy !== null}><Ban size={13} /></button>}
+                    {canEdit && <button className="mini-button ghost" title="Edit (creates a new version)" aria-label={`Edit ${test.title}`} onClick={() => setEditor({ mode: "edit", test })} disabled={busy !== null}><Pencil size={13} /></button>}
+                    {canDelete && <button className="mini-button danger ghost" title="Delete" aria-label={`Delete ${test.title}`} onClick={() => deleteOne(test)} disabled={busy !== null}><Trash2 size={13} /></button>}
+                  </span>
+                </article>
+              ))}
+            </section>}
+            {detail && <Inspector
+              test={detail}
+              projectName={detail.projectName ?? projectNameOf(detail.projectId)}
+              busy={busy !== null}
+              position={`${ordered.findIndex((test) => test.id === detail.id) + 1} / ${ordered.length}`}
+              onClose={() => setDetailId(null)}
+              onApprove={canApprove && detail.status !== "APPROVED" ? () => approveOne(detail) : undefined}
+              onReject={canApprove && detail.status !== "REJECTED" && detail.status !== "ARCHIVED" ? () => rejectOne(detail) : undefined}
+              onEdit={canEdit ? () => setEditor({ mode: "edit", test: detail }) : undefined}
+              onDelete={canDelete ? () => deleteOne(detail) : undefined}
+            />}
+          </div>}
 
       </>}
 
@@ -329,10 +460,9 @@ function TestCasesInner() {
           : { ...current, tags: current.tags.some((entry) => entry.id === item.id) ? current.tags : [...current.tags, item] })}
         onClose={() => setEditor(null)}
         onSaved={async (message) => { setEditor(null); notify(message, "success"); await reload(); }}
-        onError={(message) => notify(message, "error")}
+        onError={(message, tone) => notify(message, tone ?? "error")}
       />}
 
-      {detail && <TestDetail test={detail} onClose={() => setDetail(null)} />}
 
       {pendingRun && (
         <RunEnvironmentModal
@@ -341,7 +471,7 @@ function TestCasesInner() {
           onReady={(envId) => {
             const run = pendingRun;
             setPendingRun(null);
-            void act("run", () => api(`/v1/projects/${run.projectId}/executions`, { method: "POST", body: { testCaseIds: run.ids, environmentId: envId } }), `${run.ids.length} approved tests queued for execution.`).then(() => setChecked(new Set()));
+            void act("run", () => api(`/v1/projects/${run.projectId}/executions`, { method: "POST", body: { testCaseIds: run.ids, environmentId: envId } }), `${run.ids.length} approved tests queued for execution.`).then((ok) => { setChecked(new Set()); if (ok) showQueued(run.ids.length); });
           }}
         />
       )}
@@ -354,7 +484,7 @@ function TestCasesInner() {
         </div>
       )}
 
-      {toast && <div className={`toast ${toast.tone}`}>{toast.tone === "success" ? <Check size={17} /> : toast.tone === "error" ? <X size={17} /> : <CircleHelp size={17} />}{toast.message}</div>}
+      {toast && <div className={`toast ${toast.tone}`} role="status">{toast.tone === "success" ? <Check size={16} /> : toast.tone === "error" ? <X size={16} /> : <CircleHelp size={16} />}{toast.message}</div>}
     </AppShell>
   );
 }
@@ -369,16 +499,10 @@ function BulkClassify({ groups, classifications, onDone, disabled }: { groups: A
       {open && (
         <div className="action-menu classify-menu">
           <label>Move to module
-            <select value={moduleId} onChange={(event) => setModuleId(event.target.value)}>
-              <option value="">— none —</option>
-              {classifications.modules.map((module) => <option key={module.id} value={module.id}>{module.name}</option>)}
-            </select>
+            <Select value={moduleId} onChange={setModuleId} options={[{ value: "", label: "— none —" }, ...classifications.modules.map((module) => ({ value: module.id, label: module.name }))]} />
           </label>
           <label>Add tag
-            <select value={tagId} onChange={(event) => setTagId(event.target.value)}>
-              <option value="">— none —</option>
-              {classifications.tags.map((tag) => <option key={tag.id} value={tag.id}>{tag.name}</option>)}
-            </select>
+            <Select value={tagId} onChange={setTagId} options={[{ value: "", label: "— none —" }, ...classifications.tags.map((tag) => ({ value: tag.id, label: tag.name }))]} />
           </label>
           <button className="mini-button" onClick={async () => {
             try {
@@ -437,9 +561,8 @@ function ClassificationsDrawer({ classifications, counts, onClose, onChanged, no
     <>
       <header className="drawer-head">
         <div>
-          <p className="eyebrow">ORGANIZE</p>
           <h2>Modules &amp; tags</h2>
-          <small className="dim">Groupings you own \u2014 preserved across AI regeneration. Deleting never deletes tests.</small>
+          <small className="dim">Groupings you own, preserved across AI regeneration. Deleting one never deletes tests.</small>
         </div>
         <button className="icon-button" aria-label="Close" onClick={onClose}><X size={16} /></button>
       </header>
@@ -472,7 +595,7 @@ function ClassificationsDrawer({ classifications, counts, onClose, onChanged, no
           <div className="class-row tag" key={tag.id}>
             <Tag size={14} />
             <strong>{tag.name}</strong>
-            <span className="module-count gold">{counts.get(tag.id) ?? 0} tests</span>
+            <span className="module-count">{counts.get(tag.id) ?? 0} tests</span>
             <button className="mini-button danger" aria-label={"Delete tag " + tag.name} onClick={() => void remove("tag", tag.id, tag.name)}><Trash2 size={13} /></button>
           </div>
         ))}
@@ -481,8 +604,9 @@ function ClassificationsDrawer({ classifications, counts, onClose, onChanged, no
   );
 }
 
-function ModuleGroups({ tests, collapsed, setCollapsed, checked, setChecked, busy, onDetail, onApprove, onReject, onEdit, onDelete, allChecked, onSelectAll }: {
+function ModuleGroups({ tests, collapsed, setCollapsed, checked, setChecked, busy, selectedId, onDetail, onApprove, onReject, onEdit, onDelete, allChecked, onSelectAll }: {
   tests: TestRow[];
+  selectedId: string | null;
   collapsed: Set<string>;
   setCollapsed: React.Dispatch<React.SetStateAction<Set<string>>>;
   checked: Set<string>;
@@ -496,6 +620,8 @@ function ModuleGroups({ tests, collapsed, setCollapsed, checked, setChecked, bus
   allChecked: boolean;
   onSelectAll: () => void;
 }) {
+  const me = useMe();
+  const canEdit = can(me, PERMISSIONS.TEST_CASES_EDIT), canDelete = can(me, PERMISSIONS.TEST_CASES_DELETE), canApprove = can(me, PERMISSIONS.TEST_CASES_APPROVE);
   const groups = new Map<string, { key: string; name: string; tests: TestRow[] }>();
   for (const test of tests) {
     const memberships = test.modules.map((entry) => entry.module);
@@ -549,7 +675,7 @@ function ModuleGroups({ tests, collapsed, setCollapsed, checked, setChecked, bus
             {!isCollapsed && (
               <div className="module-group-body">
                 {group.tests.map((test) => (
-                  <div className="module-row" key={group.key + "-" + test.id}>
+                  <div className={`module-row${selectedId === test.id ? " selected" : ""}${checked.has(test.id) ? " checked" : ""}`} key={group.key + "-" + test.id} data-test-id={test.id}>
                     <label><input type="checkbox" checked={checked.has(test.id)} onChange={(event) => {
                       setChecked((current) => {
                         const next = new Set(current);
@@ -557,17 +683,17 @@ function ModuleGroups({ tests, collapsed, setCollapsed, checked, setChecked, bus
                         return next;
                       });
                     }} /></label>
-                    <button className="test-title" onClick={() => onDetail(test)}>
+                    <button className="test-title" onClick={() => onDetail(test)} aria-pressed={selectedId === test.id}>
                       <strong>{test.title}</strong>
                       <small>{[test.capability, test.category ? categoryLabels[test.category] ?? test.category : null].filter(Boolean).join(" · ")}</small>
                     </button>
                     <span className={"status " + statusClass(test.status)}>{statusLabels[test.status] ?? test.status}</span>
                     <span className={"priority " + test.priority.toLowerCase()}>{test.priority}</span>
                     <span className="row-actions">
-                      {test.status !== "APPROVED" && <button className="mini-button" title="Approve" onClick={() => onApprove(test)} disabled={busy !== null}><ThumbsUp size={13} /></button>}
-                      {test.status !== "REJECTED" && test.status !== "ARCHIVED" && <button className="mini-button danger" title="Reject" onClick={() => onReject(test)} disabled={busy !== null}><Ban size={13} /></button>}
-                      <button className="mini-button ghost" title="Edit" onClick={() => onEdit(test)} disabled={busy !== null}><Pencil size={13} /></button>
-                      <button className="mini-button danger" title="Delete" onClick={() => onDelete(test)} disabled={busy !== null}><Trash2 size={13} /></button>
+                      {canApprove && test.status !== "APPROVED" && <button className="mini-button approve" title="Approve" aria-label={`Approve ${test.title}`} onClick={() => onApprove(test)} disabled={busy !== null}><ThumbsUp size={13} /></button>}
+                      {canApprove && test.status !== "REJECTED" && test.status !== "ARCHIVED" && <button className="mini-button danger" title="Reject" onClick={() => onReject(test)} disabled={busy !== null}><Ban size={13} /></button>}
+                      {canEdit && <button className="mini-button ghost" title="Edit" onClick={() => onEdit(test)} disabled={busy !== null}><Pencil size={13} /></button>}
+                      {canDelete && <button className="mini-button danger ghost" title="Delete" aria-label={`Delete ${test.title}`} onClick={() => onDelete(test)} disabled={busy !== null}><Trash2 size={13} /></button>}
                     </span>
                   </div>
                 ))}
@@ -702,26 +828,44 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
   const [aiDescription, setAiDescription] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState("");
-  const [recording, setRecording] = useState<{ sessionId: string; count: number } | null>(null);
+  const [recording, setRecording] = useState<{ sessionId: string; deepLink: string; status: "awaiting-client" | "recording" | "stopped"; count: number } | null>(null);
+  const [setupModalOpen, setSetupModalOpen] = useState(false);
+  // One-time setup: once the recorder has attached on this machine, the setup modal
+  // disables downloads — instructions stay viewable, reinstalling is not offered.
+  const [recorderInstalled, setRecorderInstalled] = useState(false);
   const [recordingStarting, setRecordingStarting] = useState(false);
   const [regionPicker, setRegionPicker] = useState<{ index: number } | null>(null);
+
+  useEffect(() => {
+    setRecorderInstalled(window.localStorage.getItem("proofline.recorderInstalled") === "1");
+  }, []);
 
   async function startRecording() {
     if (recordingStarting || recording) return;
     setRecordingStarting(true);
+    setRecorderInstalled(window.localStorage.getItem("proofline.recorderInstalled") === "1");
     setAiError("");
     try {
       const envs = await api<Array<{ id: string; url: string; isDefault: boolean }>>(`/v1/projects/${projectId}/environments`);
       const env = envs.find((e) => e.isDefault) ?? envs[0];
       if (!env) { onError("Add an environment first - the recorder needs your app URL."); return; }
-      const result = await api<{ sessionId: string }>(`/v1/projects/${projectId}/recordings`, { method: "POST", body: { url: env.url } });
-      setRecording({ sessionId: result.sessionId, count: 0 });
+      const result = await api<{ sessionId: string; deepLink: string; status: "awaiting-client" | "recording" }>(`/v1/projects/${projectId}/recordings`, { method: "POST", body: { url: env.url, apiUrl } });
+      setRecording({ sessionId: result.sessionId, deepLink: result.deepLink, status: result.status, count: 0 });
+      // The old one-click workflow: open the recorder immediately. Setup help is never
+      // auto-shown — the Recorder Setup button inside the Steps box opens it on demand.
+      launchDeepLink(result.deepLink);
       const poll = window.setInterval(async () => {
         try {
-          const data = await api<{ count: number }>(`/v1/projects/${projectId}/recordings/${result.sessionId}`);
-          setRecording((current) => (current ? { ...current, count: data.count } : current));
+          const data = await api<{ count: number; status: "awaiting-client" | "recording" | "stopped" }>(`/v1/projects/${projectId}/recordings/${result.sessionId}`);
+          setRecording((current) => (current ? { ...current, count: data.count, status: data.status } : current));
+          if (data.status === "recording") {
+            // A successful attach marks the one-time setup as done on this machine.
+            window.localStorage.setItem("proofline.recorderInstalled", "1");
+            setRecorderInstalled(true);
+          }
+          if (data.status === "stopped") window.clearInterval(poll);
         } catch { window.clearInterval(poll); }
-      }, 2000);
+      }, 1500);
     } catch (error) {
       onError(error instanceof Error ? error.message : "Unable to start the recorder");
     } finally {
@@ -738,9 +882,9 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
         .map((e) => ({ action: e.action as StepDto["action"], target: e.target, value: e.value }));
       if (imported.length) {
         setSteps(imported);
-        onError(`${imported.length} steps imported - review, edit targets if needed, then save.`);
+        onError(`${imported.length} step${imported.length === 1 ? "" : "s"} imported - review, edit targets if needed, then save.`, "success");
       } else {
-        onError("No steps were captured - click through the flow in the opened browser.", "error");
+        onError("No steps were captured - click through the flow in the recorder window next time.", "info");
       }
     } catch (error) {
       onError(error instanceof Error ? error.message : "Unable to stop the recorder");
@@ -848,8 +992,8 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
       <div className="modal wide">
         <header>
           <div>
-            <p className="eyebrow">{mode === "create" ? "NEW MANUAL TEST" : `EDIT · NEW VERSION AFTER v${test!.version}`}</p>
-            <h2>{mode === "create" ? "Create test case" : test!.title}</h2>
+            <h2>{mode === "create" ? "New manual test" : test!.title}</h2>
+            <p className="meta">{mode === "create" ? "saved as pending review" : `saving creates v${test!.version + 1} and returns it to review`}</p>
           </div>
           {mode === "create" && onProjectChange && (
             <div className="editor-project">
@@ -890,7 +1034,7 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
               <em>State change</em> — does an action correctly change app state (visibility, counts)?
               <em>Integration</em> — a flow spanning multiple features or systems.
             </InfoTooltip></span>
-            <select value={category} onChange={(event) => setCategory(event.target.value)}>{categoryOptions.map((option) => <option key={option} value={option}>{categoryLabels[option]}</option>)}</select>
+            <Select value={category} onChange={setCategory} options={categoryOptions.map((option) => ({ value: option, label: categoryLabels[option] }))} />
             <small className="field-hint">Not sure? Use <strong>Happy path</strong> for normal flows, <strong>Validation</strong> for form/input checks.</small>
           </label>
             <label><span className="label-row">Priority <InfoTooltip label="What does priority mean?">
@@ -900,7 +1044,7 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
               <em>MEDIUM</em> — normal coverage; fix in the current cycle.
               <em>LOW</em> — cosmetic or rare paths.
             </InfoTooltip></span>
-            <select value={priority} onChange={(event) => setPriority(event.target.value)}>{priorityOptions.map((option) => <option key={option} value={option}>{option}</option>)}</select>
+            <Select value={priority} onChange={setPriority} options={priorityOptions.map((option) => ({ value: option, label: option }))} />
           </label>
           </div>
           <label className="block-label">Preconditions (one per line)<textarea rows={2} value={preconditions} onChange={(event) => setPreconditions(event.target.value)} placeholder={"User is signed in\nCart is empty"} /></label>
@@ -912,25 +1056,24 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
           <fieldset className="steps-editor">
             <legend>Steps</legend>
             <div className="record-bar">
+              <button type="button" className="mini-button" onClick={() => setSetupModalOpen(true)} title="Recorder setup — open, install, and instructions"><Download size={13} />Recorder Setup</button>
               {!recording ? (
                 <>
                   <button type="button" className="record-btn" disabled={recordingStarting} onClick={() => void startRecording()}>
-                    <CircleDot size={14} /> {recordingStarting ? "Opening browser..." : "Record steps in a browser"}
+                    <CircleDot size={14} /> {recordingStarting ? "Opening..." : "Record steps in a browser"}
                   </button>
-                  <small className="record-hint">Opens your app in a browser - click through the flow and every action is captured as a step. Passwords are masked as {'{{password}}'}.</small>
+                  <small className="record-hint">Opens your app in the Proofline Recorder desktop app - click through the flow and every action is captured as a step. Passwords are masked as {'{{password}}'}.</small>
                 </>
               ) : (
                 <>
-                  <span className="record-live"><span className="record-dot" /> Recording - {recording.count} step{recording.count === 1 ? "" : "s"} captured. Perform the flow in the opened browser, then stop.</span>
-                  <button type="button" className="mini-button danger" onClick={async () => {
-                    setRecording(null);
-                    try {
-                      const result = await api<{ events: Array<{ action: string; target: string; value?: string }> }>(`/v1/projects/${projectId}/recordings/${recording.sessionId}/stop`, { method: "POST" });
-                      const imported = result.events.filter((e) => ["click", "fill", "select"].includes(e.action) && (e.target ?? "").trim() !== "" && e.target.trim() !== "css:").map((e) => ({ action: e.action as StepDto["action"], target: e.target, value: e.value }));
-                      if (imported.length) { setSteps(imported); onError(`${imported.length} steps imported - review and save.`, "success"); }
-                      else onError("No steps captured.", "error");
-                    } catch (error) { onError(error instanceof Error ? error.message : "Stop failed", "error"); }
-                  }}>Stop &amp; import</button>
+                  {recording.status === "awaiting-client" ? (
+                    <span className="record-live"><span className="record-dot" /> Opening the Proofline Recorder…</span>
+                  ) : recording.status === "recording" ? (
+                    <span className="record-live"><span className="record-dot" /> Recording - {recording.count} step{recording.count === 1 ? "" : "s"} captured. Perform the flow in the recorder window, then stop.</span>
+                  ) : (
+                    <span className="record-live">Recording ended - {recording.count} step{recording.count === 1 ? "" : "s"} captured.</span>
+                  )}
+                  <button type="button" className="mini-button danger" onClick={() => void stopRecording()}>Stop Recording</button>
                 </>
               )}
             </div>
@@ -944,12 +1087,10 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
                 >
                 <span className="drag-handle" draggable title="Drag to reorder" onDragStart={() => { dragIndex.current = index; }} onDragEnd={() => { dragIndex.current = null; setDragOver(null); }}><GripVertical size={14} /></span>
                 <span className="step-index">{index + 1}</span>
-                <select value={step.action} onChange={(event) => updateStep(index, { action: event.target.value })} aria-label={`Step ${index + 1} action`}>
-                  {["navigate", "click", "fill", "select", "upload", "assert", "waitFor", "wait", "screenshot", "capture", "assertColor", "assertData"].map((action) => <option key={action} value={action}>{action === "waitFor" ? "waitFor (text)" : action === "wait" ? "wait (seconds)" : action === "assertColor" ? "assert color" : action === "assertData" ? "assert data" : action === "capture" ? "capture (variable)" : action}</option>)}
-                </select>
-                <input value={step.target} onChange={(event) => updateStep(index, { target: event.target.value })} placeholder={step.action === "navigate" ? "/route" : step.action === "wait" ? "Seconds (e.g. 5)" : step.action === "screenshot" ? "Frame name (e.g. before-flip)" : step.action === "capture" ? "Regex with one group" : step.action === "assertColor" ? "Canvas selector (optional)" : step.action === "assertData" ? "API URL — {{query:name}} supported" : step.action === "assert" && step.condition === "visual" ? "Describe what should be true on screen" : "Visible text or label"} aria-label={`Step ${index + 1} target`} />
-                {(step.action === "fill" || step.action === "select" || step.action === "upload" || (step.action === "assert" && step.condition === "visual") || step.action === "assertColor" || step.action === "assertData" || step.action === "capture") && (
-                  <input value={step.value ?? ""} onChange={(event) => updateStep(index, { value: event.target.value })} placeholder={step.action === "fill" ? "e.g. {{username}}" : step.action === "assertColor" ? "#0d5ea0" : step.action === "assertData" ? "0.configuration.body == #0d5ea0" : step.action === "capture" ? "Variable name (e.g. designNumber)" : step.action === "assert" ? "Reference frame name (optional)" : "Value"} aria-label={`Step ${index + 1} value`} />
+                <Select className="step-action" value={step.action} onChange={(action) => updateStep(index, { action })} ariaLabel={`Step ${index + 1} action`} options={stepActions} />
+                <input value={step.target} onChange={(event) => updateStep(index, { target: event.target.value })} placeholder={step.action === "navigate" ? "/route" : step.action === "wait" ? "Seconds (e.g. 5)" : step.action === "screenshot" ? "Frame name (e.g. before-flip)" : step.action === "capture" ? "Regex with one group" : step.action === "assertColor" ? "Canvas selector (optional)" : step.action === "assertData" ? "API URL — {{query:name}} supported" : step.action === "assertResponse" ? "API path the app calls, e.g. /api/orders" : step.action === "assert" && step.condition === "visual" ? "Describe what should be true on screen" : "Visible text or label"} aria-label={`Step ${index + 1} target`} />
+                {(step.action === "fill" || step.action === "select" || step.action === "upload" || (step.action === "assert" && step.condition === "visual") || step.action === "assertColor" || step.action === "assertData" || step.action === "assertResponse" || step.action === "capture") && (
+                  <input value={step.value ?? ""} onChange={(event) => updateStep(index, { value: event.target.value })} placeholder={step.action === "fill" ? "e.g. {{username}}" : step.action === "assertColor" ? "#0d5ea0" : step.action === "assertData" ? "0.configuration.body == #0d5ea0" : step.action === "assertResponse" ? "all status == Pending  |  count >= 1  |  shown name" : step.action === "capture" ? "Variable name (e.g. designNumber)" : step.action === "assert" ? "Reference frame name (optional)" : "Value"} aria-label={`Step ${index + 1} value`} />
                 )}
                 {step.action === "assertColor" && (
                   <span className="region-fields">
@@ -960,9 +1101,7 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
                   </span>
                 )}
                 {step.action === "assert" && (
-                  <select value={step.condition ?? "visible"} onChange={(event) => updateStep(index, { condition: event.target.value })} aria-label={`Step ${index + 1} condition`}>
-                    {["visible", "hidden", "contains", "equals", "urlMatches", "visual"].map((condition) => <option key={condition} value={condition}>{condition === "visual" ? "AI visual check" : condition}</option>)}
-                  </select>
+                  <Select className="step-condition" value={step.condition ?? "visible"} onChange={(condition) => updateStep(index, { condition })} ariaLabel={`Step ${index + 1} condition`} options={["visible", "hidden", "contains", "equals", "urlMatches", "visual"].map((condition) => ({ value: condition, label: condition === "visual" ? "AI visual check" : condition }))} />
                 )}
                 <button type="button" className="mini-button ghost" aria-label={`Move step ${index + 1} up`} disabled={index === 0} onClick={() => moveStep(index, -1)}><ArrowUp size={12} /></button>
                 <button type="button" className="mini-button ghost" aria-label={`Move step ${index + 1} down`} disabled={index === steps.length - 1} onClick={() => moveStep(index, 1)}><ArrowDown size={12} /></button>
@@ -1032,6 +1171,25 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
           onError={(message) => onError(message)}
         />
       )}
+      {setupModalOpen && (
+        <RecorderSetupModal
+          apiUrl={apiUrl}
+          installed={recorderInstalled}
+          deepLink={recording?.deepLink ?? null}
+          onClose={() => setSetupModalOpen(false)}
+          onLaunch={launchDeepLink}
+          onUninstall={() => {
+            window.localStorage.removeItem("proofline.recorderInstalled");
+            setRecorderInstalled(false);
+          }}
+          onDetected={() => {
+            // The live presence probe found the app running — persist the flag so the
+            // installed state survives reloads even if the app is quit later.
+            window.localStorage.setItem("proofline.recorderInstalled", "1");
+            setRecorderInstalled(true);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1060,8 +1218,10 @@ function RegionPickerModal({ projectId, onApply, onClose, onError }: {
       const envs = await api<Array<{ id: string; url: string; isDefault: boolean }>>(`/v1/projects/${projectId}/environments`);
       const env = envs.find((e) => e.isDefault) ?? envs[0];
       if (!env) { onError("Add an environment first - the picker needs your app URL."); return; }
-      const result = await api<{ sessionId: string }>(`/v1/projects/${projectId}/recordings`, { method: "POST", body: { url: env.url } });
+      const result = await api<{ sessionId: string; deepLink: string }>(`/v1/projects/${projectId}/recordings`, { method: "POST", body: { url: env.url, apiUrl } });
       setSession(result.sessionId);
+      // The screenshot comes from the Proofline Recorder desktop app — open it for this session.
+      launchDeepLink(result.deepLink);
       await refresh(result.sessionId);
     } catch (error) {
       onError(error instanceof Error ? error.message : "Unable to open the picker browser");
@@ -1121,7 +1281,7 @@ function RegionPickerModal({ projectId, onApply, onClose, onError }: {
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={onClose}>
       <div className="modal region-picker" onClick={(event) => event.stopPropagation()}>
-        <header><div><p className="eyebrow">Region picker</p><h2>Drag a rectangle over the area to check</h2></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={16} /></button></header>
+        <header><div><h2>Drag a rectangle over the area to check</h2><p className="meta">region picker · coordinates saved as percentages</p></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={16} /></button></header>
         <div className="modal-body">
           {!session ? (
             <div className="picker-intro">
@@ -1149,35 +1309,69 @@ function RegionPickerModal({ projectId, onApply, onClose, onError }: {
   );
 }
 
-function TestDetail({ test, onClose }: { test: TestRow; onClose: () => void }) {
+function Inspector({ test, projectName, busy, position, onClose, onApprove, onReject, onEdit, onDelete }: {
+  test: TestRow; projectName: string; busy: boolean; position: string;
+  onClose: () => void; onApprove?: () => void; onReject?: () => void; onEdit?: () => void; onDelete?: () => void;
+}) {
+  const steps = test.definition?.steps ?? [];
+  const ref = useRef<HTMLElement | null>(null);
+  useFitViewport(ref);
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal">
-        <header><div><p className="eyebrow">{statusLabels[test.status]} · {test.source === "MANUAL" ? "MANUAL" : `AI · v${test.version}`}</p><h2>{test.title}</h2></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={16} /></button></header>
-        <div className="modal-body">
-          <dl className="detail-grid">
-            <div><dt>Project</dt><dd>{test.projectName ?? "—"}</dd></div>
-            <div><dt>Capability</dt><dd>{test.capability ?? "—"}</dd></div>
-            <div><dt>Category</dt><dd>{test.category ? categoryLabels[test.category] ?? test.category : "—"}</dd></div>
-            <div><dt>Priority</dt><dd>{test.priority}</dd></div>
-            <div><dt>Confidence</dt><dd>{test.confidence != null ? `${Math.round(test.confidence * 100)}%` : "—"}</dd></div>
-            <div><dt>Route</dt><dd>{test.route ?? "—"}</dd></div>
-            <div><dt>Created</dt><dd>{fmtRelative(test.createdAt)}</dd></div>
-            {test.generatedFromCommit && <div><dt>Generated from</dt><dd><code>{test.generatedFromCommit.slice(0, 7)}</code></dd></div>}
-            {test.lastValidatedCommit && <div><dt>Last validated</dt><dd><code>{test.lastValidatedCommit.slice(0, 7)}</code></dd></div>}
-          </dl>
-          {test.definition?.preconditions?.length ? <><h3 className="modal-subhead">Preconditions</h3><ul className="pre-list">{test.definition.preconditions.map((line, index) => <li key={index}>{line}</li>)}</ul></> : null}
-          <h3 className="modal-subhead">Steps</h3>
-          <ol className="step-list">
-            {(test.definition?.steps ?? []).map((step, index) => (
-              <li key={index}><code>{step.action}</code> {step.target}{step.value ? <> → <strong>{step.value}</strong></> : null}{step.condition ? <small> ({step.condition})</small> : null}</li>
-            ))}
-          </ol>
-          <h3 className="modal-subhead">Expected result</h3>
-          <p className="expected">{test.definition?.expectedResult ?? "—"}</p>
+    <aside className="inspector" aria-label="Test details" ref={ref}>
+      <header className="inspector-head">
+        <div className="inspector-top">
+          <span className={`status ${statusClass(test.status)}`}>{statusLabels[test.status] ?? test.status}</span>
+          <span className="meta">{test.source === "MANUAL" ? "manual" : `ai · v${test.version}`}<span className="dot">·</span>{position}<span className="keys" title="Move with j and k"><kbd>j</kbd><kbd>k</kbd></span></span>
+          <button className="icon-button" aria-label="Close details" title="Close (Esc)" onClick={onClose}><X size={14} /></button>
         </div>
-        <footer><button className="primary-button" onClick={onClose}>Close</button></footer>
+        <h2>{test.title}</h2>
+        {(test.modules.length > 0 || test.tags.length > 0) && <div className="chips">
+          {test.modules.map((entry) => <span className="chip module" key={entry.module.id}><Layers size={10} />{entry.module.name}</span>)}
+          {test.tags.map((entry) => <span className="chip tag" key={entry.tag.id}>#{entry.tag.name}</span>)}
+        </div>}
+      </header>
+      <div className="inspector-body">
+        {test.status === "APPROVED"
+          ? <p className="run-gate open"><PlayCircle size={14} />Runs with the approved suite<span>v{test.version} approved</span></p>
+          : <p className="run-gate"><Lock size={14} />Run unavailable<span>version not approved</span></p>}
+        <dl className="detail-grid">
+          <div><dt>Project</dt><dd>{projectName}</dd></div>
+          <div><dt>Capability</dt><dd>{test.capability ?? "—"}</dd></div>
+          <div><dt>Category</dt><dd>{test.category ? categoryLabels[test.category] ?? test.category : "—"}</dd></div>
+          <div><dt>Priority</dt><dd><span className={`priority ${test.priority.toLowerCase()}`}>{test.priority}</span></dd></div>
+          <div><dt>Confidence</dt><dd className="mono">{test.confidence != null ? `${Math.round(test.confidence * 100)}%` : "—"}</dd></div>
+          <div><dt>Route</dt><dd className="mono">{test.route ?? "—"}</dd></div>
+          <div><dt>Generated from</dt><dd className="mono">{test.generatedFromCommit ? shortSha(test.generatedFromCommit) : "—"}</dd></div>
+          <div><dt>Last validated</dt><dd className="mono">{test.lastValidatedCommit ? shortSha(test.lastValidatedCommit) : "—"}</dd></div>
+        </dl>
+        {test.definition?.preconditions?.length ? <section><h3 className="section-label">Preconditions</h3><ul className="pre-list">{test.definition.preconditions.map((line, index) => <li key={index}>{line}</li>)}</ul></section> : null}
+        <section>
+          <h3 className="section-label">Steps <span className="dim mono">{steps.length}</span></h3>
+          {steps.length ? <ol className="step-list">
+            {steps.map((step, index) => (
+              <li key={index}><span><code>{step.action}</code> {step.target}{step.value ? <> → <strong>{step.value}</strong></> : null}{step.condition ? <small> ({step.condition})</small> : null}</span></li>
+            ))}
+          </ol> : <p className="dim">No steps recorded.</p>}
+        </section>
+        <section><h3 className="section-label">Expected result</h3><p className="expected">{test.definition?.expectedResult ?? "—"}</p></section>
+        <p className="meta">created {fmtRelative(test.createdAt)}</p>
       </div>
+      {(onApprove || onReject || onEdit || onDelete) && <footer className="inspector-foot">
+        {onApprove && <button className="run-button" onClick={onApprove} disabled={busy}><ThumbsUp size={13} />Approve <kbd>a</kbd></button>}
+        {onReject && <button className="mini-button danger" style={{ minHeight: 32 }} onClick={onReject} disabled={busy}><Ban size={13} />Reject <kbd>r</kbd></button>}
+        {onEdit && <button className="mini-button" style={{ minHeight: 32 }} onClick={onEdit} disabled={busy}><Pencil size={13} />Edit</button>}
+        <span className="spacer" />
+        {onDelete && <button className="mini-button danger ghost" style={{ minHeight: 32 }} aria-label="Delete test" title="Delete" onClick={onDelete} disabled={busy}><Trash2 size={13} /></button>}
+      </footer>}
+    </aside>
+  );
+}
+
+function LibrarySkeleton({ rowsOnly }: { rowsOnly?: boolean }) {
+  return (
+    <div style={{ display: "grid", gap: 12 }} aria-busy="true" aria-label="Loading test cases">
+      {!rowsOnly && <div className="lifecycle-tabs">{Array.from({ length: 6 }, (_, i) => <div key={i} style={{ flex: 1, padding: "10px 12px", display: "grid", gap: 6 }}><span className="skel" style={{ width: 70, height: 9 }} /><span className="skel" style={{ width: 28, height: 16 }} /></div>)}</div>}
+      <div className="library">{Array.from({ length: 7 }, (_, i) => <div className="library-row" key={i}><span className="skel" style={{ width: 14, height: 14 }} /><span style={{ display: "grid", gap: 6 }}><span className="skel" style={{ width: `${40 + (i * 17) % 40}%`, height: 11 }} /><span className="skel" style={{ width: "30%", height: 9 }} /></span><span className="skel" style={{ width: 80, height: 18, borderRadius: 999 }} /></div>)}</div>
     </div>
   );
 }

@@ -5,7 +5,7 @@ export type RegenerationMode = "incremental" | "full";
 export const regeneration = {
   heading: "Regenerate without losing a reviewed test.",
   intro:
-    "When the code moves, Proofline compares commits and only revisits what changed. Manual, approved, edited and historical tests are always preserved.",
+    "When the code moves, ProoflineQA compares commits and only revisits what changed. Manual, approved, edited and historical tests are always preserved.",
   modes: {
     incremental: {
       label: "Incremental regeneration",

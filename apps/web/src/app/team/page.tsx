@@ -2,9 +2,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Check, CircleHelp, Trash2, UserPlus, X } from "lucide-react";
+import Link from "next/link";
+import { PERMISSIONS, APP_ROLES, appRoles } from "@ai-qa/domain";
 import { AppShell } from "@/components/app-shell";
+import { Select } from "@/components/select";
 import { api, fmtDate } from "@/lib/api";
-import { useMe, useToast } from "@/lib/hooks";
+import { can, useMe, useToast } from "@/lib/hooks";
+
+const roleNames: Record<string, string> = { ADMIN: "Admin", QA: "QA", DEVELOPER: "Developer" };
 
 interface Member { userId: string; email: string; displayName: string; role: string; joinedAt: string }
 
@@ -16,7 +21,7 @@ export default function TeamPage() {
   const [tempPassword, setTempPassword] = useState<{ email: string; password: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
-  const isAdmin = me?.role === "ADMIN";
+  const isAdmin = can(me, PERMISSIONS.TEAM_MANAGE);
 
   const reload = useCallback(async () => {
     try {
@@ -55,12 +60,12 @@ export default function TeamPage() {
     <AppShell activePath="/team">
       <header className="page-header">
         <div>
-          <p className="eyebrow">ORGANIZATION</p>
           <h1>Team</h1>
           <p className="muted">{members ? `${members.length} member${members.length === 1 ? "" : "s"} · Admins manage users, billing, and approvals` : "Loading…"}</p>
         </div>
         <div className="heading-actions">
-          {isAdmin && <button className="primary-button" onClick={() => setInvite({ email: "", displayName: "", role: "QA" })}><UserPlus size={16} />Invite member</button>}
+          {can(me, PERMISSIONS.ROLES_VIEW) && <Link className="secondary-button" href="/roles">Manage roles</Link>}
+          {isAdmin && <button className="primary-button" onClick={() => setInvite({ email: "", displayName: "", role: APP_ROLES.QA })}><UserPlus size={16} />Invite member</button>}
         </div>
       </header>
 
@@ -73,9 +78,7 @@ export default function TeamPage() {
             <article className="team-row" key={member.userId}>
               <div className="member"><span className="avatar">{member.displayName.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase()}</span><div><strong>{member.displayName}</strong><small>{member.email}</small></div></div>
               {isAdmin ? (
-                <select value={member.role} aria-label={`Role for ${member.displayName}`} onChange={(event) => act(`role-${member.userId}`, () => api(`/v1/team/${member.userId}/role`, { method: "PATCH", body: { role: event.target.value } }), "Role updated.")} disabled={busy !== null}>
-                  {["ADMIN", "QA", "DEVELOPER"].map((role) => <option key={role} value={role}>{role}</option>)}
-                </select>
+                <Select value={member.role} ariaLabel={`Role for ${member.displayName}`} onChange={(role) => act(`role-${member.userId}`, () => api(`/v1/team/${member.userId}/role`, { method: "PATCH", body: { role } }), "Role updated.")} disabled={busy !== null} options={appRoles.map((role) => ({ value: role, label: roleNames[role] ?? role }))} />
               ) : <span className="chip tag">{member.role}</span>}
               <small className="dim">{fmtDate(member.joinedAt)}</small>
               {isAdmin && <button className="mini-button danger" title="Remove member" disabled={busy !== null || member.userId === me?.id} onClick={() => { if (window.confirm(`Remove ${member.displayName} from the organization?`)) void act(`remove-${member.userId}`, () => api(`/v1/team/${member.userId}`, { method: "DELETE" }), "Member removed."); }}><Trash2 size={13} /></button>}
@@ -87,17 +90,17 @@ export default function TeamPage() {
       {invite && (
         <div className="modal-backdrop" role="dialog" aria-modal="true">
           <div className="modal">
-            <header><div><p className="eyebrow">INVITE</p><h2>Add a team member</h2></div><button className="icon-button" aria-label="Close" onClick={() => setInvite(null)}><X size={16} /></button></header>
+            <header><div><h2>Add a team member</h2></div><button className="icon-button" aria-label="Close" onClick={() => setInvite(null)}><X size={16} /></button></header>
             <div className="modal-body">
               <div className="field-grid">
                 <label className="span2">Full name<input value={invite.displayName} onChange={(event) => setInvite({ ...invite, displayName: event.target.value })} placeholder="Jamie Rivera" /></label>
                 <label className="span2">Work email<input type="email" value={invite.email} onChange={(event) => setInvite({ ...invite, email: event.target.value })} placeholder="jamie@company.com" /></label>
                 <label className="span2">Role
-                  <select value={invite.role} onChange={(event) => setInvite({ ...invite, role: event.target.value })}>
-                    <option value="ADMIN">Admin — full control including billing</option>
-                    <option value="QA">QA — review, approve, and execute tests</option>
-                    <option value="DEVELOPER">Developer — view results and connect repos</option>
-                  </select>
+                  <Select value={invite.role} onChange={(role) => setInvite({ ...invite, role })} options={[
+                    { value: APP_ROLES.ADMIN, label: "Admin", hint: "full control including billing" },
+                    { value: APP_ROLES.QA, label: "QA", hint: "review, approve, and execute tests" },
+                    { value: APP_ROLES.DEVELOPER, label: "Developer", hint: "view results and connect repos" }
+                  ]} />
                 </label>
               </div>
               <p className="dim">A temporary password is generated for the new member. Share it securely; they can change it later.</p>
@@ -113,7 +116,7 @@ export default function TeamPage() {
       {tempPassword && (
         <div className="modal-backdrop" role="dialog" aria-modal="true">
           <div className="modal">
-            <header><div><p className="eyebrow">INVITE CREATED</p><h2>Share the temporary password</h2></div><button className="icon-button" aria-label="Close" onClick={() => setTempPassword(null)}><X size={16} /></button></header>
+            <header><div><h2>Share the temporary password</h2></div><button className="icon-button" aria-label="Close" onClick={() => setTempPassword(null)}><X size={16} /></button></header>
             <div className="modal-body">
               <p>{tempPassword.email} can sign in with:</p>
               <p className="temp-password"><code>{tempPassword.password}</code></p>

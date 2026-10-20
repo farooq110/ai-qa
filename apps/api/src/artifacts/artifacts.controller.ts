@@ -4,11 +4,14 @@ import type { FastifyReply } from "fastify";
 import { join } from "node:path";
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { AuthGuard } from "../auth/auth.guard";
+import { PermissionsGuard, RequirePermission } from "../rbac/permissions.guard";
 import { PrismaService } from "../database/prisma.service";
 import type { AuthenticatedUser } from "../auth/auth.types";
 import { CurrentUser } from "../auth/current-user.decorator";
+import { PERMISSIONS } from "@ai-qa/domain";
 
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, PermissionsGuard)
+@RequirePermission(PERMISSIONS.EXECUTIONS_VIEW)
 @Controller("v1/artifacts")
 export class ArtifactsController {
   private readonly s3: S3Client | null;

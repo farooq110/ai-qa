@@ -1,0 +1,30 @@
+---
+title: Importing a Repository
+description: Import a repository as a project, including one app from a monorepo.
+---
+
+A **project** is one application in one repository. You import it from an account you have connected under [Repository providers](/docs/settings/repository-providers).
+
+## Import
+
+1. Open **Projects** and click **Import repository**.
+2. Search the repository list and click **Import**. No account yet? Use **Connect GitHub / Bitbucket / GitLab** in the same window.
+3. Confirm the details and click **Import**.
+
+| Field | Notes |
+| --- | --- |
+| Project name | Defaults to the repository name. |
+| Default branch | The branch analysis runs against. |
+| Root directory *(optional)* | A subdirectory such as `apps/web`. Only files under it are analyzed. |
+
+## Monorepos
+
+Import the same repository once per app, each with its own **root directory**. Each project has its own tests, environments, and CI settings.
+
+Importing the same repository with the same root directory twice is refused. Pick a different root directory to add another project from it.
+
+## Limits
+
+Your plan limits how many projects you can import. If a repository is missing from the list, check that the provider account can see it — for GitHub, adjust the repositories the Proofline GitHub App may access.
+
+Next: [Analysis and generation](/docs/dashboard/analyzing-your-repository).

@@ -4,11 +4,11 @@ const siteUrl = trimSlash(process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:
 const appUrl = trimSlash(process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3004");
 
 export const site = {
-  name: "Proofline",
-  title: "Proofline — AI-generated tests, human-approved, Playwright-run",
+  name: "ProoflineQA",
+  title: "ProoflineQA — AI-generated tests, human-approved, Playwright-run",
   tagline: "AI writes the tests. Your team approves them. Only approved tests run.",
   description:
-    "Proofline connects your repository, maps your application by business capability, drafts evidence-backed Playwright tests with AI, and runs only the tests a human has approved — from the dashboard or CI, pinned to the exact commit.",
+    "ProoflineQA connects your repository, maps your application by business capability, drafts evidence-backed Playwright tests with AI, and runs only the tests a human has approved — from the dashboard or CI, pinned to the exact commit.",
   url: siteUrl,
   locale: "en_US",
   links: {

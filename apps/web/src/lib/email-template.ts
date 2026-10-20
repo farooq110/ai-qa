@@ -11,7 +11,7 @@ export function renderEmail({ eyebrow, heading, bodyHtml }: { eyebrow: string; h
               <td style="width:26px;height:26px;background:#0f1418;border:1px solid #2c373e;border-radius:7px;text-align:center;vertical-align:middle;">
                 <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#35d08f;"></span>
               </td>
-              <td style="padding-left:10px;font-size:16px;font-weight:600;color:#e9eeec;">Proofline</td>
+              <td style="padding-left:10px;font-size:16px;font-weight:600;color:#e9eeec;">ProoflineQA</td>
             </tr></table>
           </td></tr>
           <tr><td style="padding:20px 32px 0;">
@@ -22,7 +22,7 @@ export function renderEmail({ eyebrow, heading, bodyHtml }: { eyebrow: string; h
             ${bodyHtml}
           </td></tr>
         </table>
-        <p style="margin:20px 0 0;font-family:ui-monospace,'SFMono-Regular',monospace;font-size:11px;color:#7f8c8a;">Proofline · AI-generated tests, human-approved</p>
+        <p style="margin:20px 0 0;font-family:ui-monospace,'SFMono-Regular',monospace;font-size:11px;color:#7f8c8a;">ProoflineQA · AI-generated tests, human-approved</p>
       </td></tr>
     </table>
   </body>

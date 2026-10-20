@@ -1,0 +1,97 @@
+---
+title: Provider Setup
+description: What GitHub, GitLab, and Bitbucket each need so deployments reach ProoflineQA.
+---
+
+You never paste a webhook URL or token. Connecting your account (Settings → Repository providers) is enough; the sections below cover what your **deployment** has to report so ProoflineQA knows when to run.
+
+## GitHub
+
+GitHub uses the Proofline GitHub App you installed when you connected. It receives deployment and workflow events for the repositories you granted it — nothing to add per repository.
+
+### Option A: The deployed URL
+
+Works automatically if your host reports deployments to GitHub — Vercel, Netlify, Render, and Railway all do.
+
+Deploying from GitHub Actions to your own server? Give the deploy job an **environment with a URL**; GitHub then records a deployment and ProoflineQA tests that URL:
+
+```yaml
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: Staging
+      url: https://staging.example.com
+    steps:
+      - run: ./deploy.sh
+```
+
+### Option B: A saved environment
+
+Use this when the app is always at the same address. Choose **A saved environment**, then:
+
+1. Enter the **Deploy workflow**: the workflow's name exactly as shown in the repository's **Actions** tab.
+2. Map each branch to an [environment](/docs/settings/environments).
+
+When that workflow completes successfully on a push to a selected branch, ProoflineQA tests the mapped environment. Workflows triggered by pull requests are ignored.
+
+<Callout type="warn">
+  Several workflows run on each push (lint, tests, deploy). Pick the one that **ends with the deployment**, or tests may start before the new version is live.
+</Callout>
+
+## GitLab
+
+ProoflineQA adds a webhook to your project when you turn CI on. This needs **Maintainer** access for the account connected in Settings. On self-managed GitLab, connect your instance first (Settings → Repository providers → Self-managed).
+
+### The deployed URL
+
+Give the deploy job an `environment` with a `url`; GitLab records a deployment when it succeeds:
+
+```yaml
+deploy:
+  stage: deploy
+  script: ./deploy.sh
+  environment:
+    name: staging
+    url: https://staging.example.com
+```
+
+Review apps (a dynamic environment per branch) work the same way, and **PR previews** tests those for open merge requests.
+
+### A saved environment
+
+When a pipeline succeeds on a selected branch, ProoflineQA tests the environment mapped to it. Merge-request pipelines, child pipelines, and tag pipelines are ignored — only the branch's own pipeline counts.
+
+## Bitbucket
+
+Bitbucket Pipelines doesn't report deployment URLs, so Bitbucket projects always use a **saved environment**:
+
+1. Add the environment in Settings (see [Environments](/docs/settings/environments)).
+2. On the CI / CD page, add the branch and pick its environment.
+
+When the branch's Pipelines build succeeds, ProoflineQA tests that environment. ProoflineQA adds a webhook to the repository when you turn CI on; this needs **Admin** access for the connected account.
+
+## Tests that need to log in
+
+Runs use the login credentials saved on one of the project's [environments](/docs/settings/environments). Preview URLs change per deployment, so set that environment's **Login URL** to a **path** such as `/login`, or leave it empty. A full address pointing at staging would send the login to the wrong site.
+
+## Protected previews
+
+Hosts can put previews behind a login wall, and then every test fails with a *401*. Give ProoflineQA the header your host accepts for automation, under **Protected deployments** on the CI / CD page. The header is sent only to the tested site's own address, so scripts and fonts it loads from other sites never see it.
+
+| Host | Header | Where to get the value |
+| --- | --- | --- |
+| Vercel *Deployment Protection* | `x-vercel-protection-bypass` (use **Vercel bypass** to add it) | Project Settings → Deployment Protection → **Protection Bypass for Automation**. |
+| Cloudflare Access | `CF-Access-Client-Id` and `CF-Access-Client-Secret` | Zero Trust → Access → Service Auth → create a service token. |
+| Other gateways | Whatever header or token they document for automated access | The gateway's own settings. |
+
+You can add up to five headers per project. Values are stored encrypted and are not shown again; leave a saved value blank to keep it.
+
+<Callout type="warn">
+  Anyone who holds a bypass secret can open your protected previews. Create one dedicated to ProoflineQA and rotate it in your host if it leaks.
+</Callout>
+
+## What isn't supported yet
+
+- **Private network addresses.** Tests run from ProoflineQA's servers, so the app must be reachable from the public internet.
+- **Per-deployment secrets.** One set of headers per project; ProoflineQA can't read a bypass secret from a deployment event.

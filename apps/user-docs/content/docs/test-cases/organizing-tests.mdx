@@ -1,0 +1,25 @@
+---
+title: Organizing Tests
+description: Modules, tags, and bulk actions.
+---
+
+**Modules** group tests by application area (*Checkout*). **Tags** mark qualities (*smoke*). Both belong to you, survive regeneration, and deleting one never deletes tests.
+
+## Create and assign
+
+- **Modules & tags** on the Test cases page opens the manager: switch between Module and Tag, type a name, press `Enter`. Each shows how many tests carry it.
+- In the editor, the **Modules** and **Tags** fields search existing names; typing a new name offers **Create "name"**.
+
+## Bulk actions
+
+Tick tests (or **Select all**, or a module group's checkbox). A bar appears:
+
+| Action | Effect |
+| --- | --- |
+| **Approve / Reject** | Applies to every selected test. |
+| **Archive** | Retires them; they never run but keep history. |
+| **Delete** | Tests with run history are archived; the rest are removed. The result is reported, e.g. *4 deleted, 2 archived*. |
+| **Modules / tags** | Move all to one module and add one tag. |
+| **Clear** | Unselect. |
+
+Selections can span projects. Changing a filter clears the selection.

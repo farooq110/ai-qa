@@ -31,7 +31,7 @@ export function RunEnvironmentModal({ projectId, onClose, onReady }: { projectId
     <div className="modal-backdrop" role="dialog" aria-modal="true">
       <div className="modal">
         <header>
-          <div><p className="eyebrow">PICK A TARGET</p><h2>Add an environment to run against</h2></div>
+          <div><h2>Add an environment to run against</h2></div>
           <button className="icon-button" aria-label="Close" onClick={onClose}><X size={16} /></button>
         </header>
         <div className="modal-body">

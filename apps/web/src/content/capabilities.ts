@@ -11,7 +11,7 @@ export type SuiteTest = {
 export const capabilities = {
   heading: "Organized by what your product does.",
   intro:
-    "Proofline groups tests by the business capability they protect, not the folder the code happens to live in. Your team layers its own modules and tags on top, and regeneration never overwrites them.",
+    "ProoflineQA groups tests by the business capability they protect, not the folder the code happens to live in. Your team layers its own modules and tags on top, and regeneration never overwrites them.",
   views: { capability: "By capability", folder: "By folder" },
   tests: [
     { id: "t1", name: "Login validation", capability: "Authentication", folder: "src/routes/auth", tags: ["smoke"] },

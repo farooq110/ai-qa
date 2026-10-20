@@ -1,0 +1,26 @@
+---
+title: Environments
+description: Deployed URLs tests run against, and the credentials they log in with.
+---
+
+An **environment** is a deployed copy of your app: a name, a URL, and optional login credentials. Each project has its own; one is the **default**. Adding, editing, and deleting require the settings-manage permission (Admin by default).
+
+The URL must be reachable from the public internet; tests run from ProoflineQA's servers, so `localhost` and private addresses do not work. Point it at a deployment of the same code your tests were generated from.
+
+## Fields
+
+| Field | Notes |
+| --- | --- |
+| Name, URL | Required. |
+| Login URL | Optional. A path such as `/login`, or empty. Leave empty if your app shows a login modal; the runner triggers it. |
+| Username, Password | Optional. The password is stored encrypted. |
+
+Use a **path** for Login URL if the same environment is also used by CI previews, because preview hostnames change per deployment.
+
+## Using credentials
+
+Reference them in a step's value as `{{username}}` and `{{password}}`. The runner signs in **once per run** and reuses the session for all tests. The real values are never written into test definitions or logs. See [Test steps reference](/docs/reference/test-steps#variables).
+
+## Default and delete
+
+**Make default** sets the environment new runs use. Deleting an environment does not alter past runs; they keep their recorded URL. Branch mappings in CI that point to a deleted environment cause runs to be skipped until you pick another.

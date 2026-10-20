@@ -35,6 +35,9 @@ services:
       API_PORT: "4000"
     volumes:
       - artifacts:/data/artifacts
+      # Recorder desktop installers (.exe/.dmg/.AppImage), served by the API at
+      # /v1/recordings/installer/<platform>. Copy built artifacts to this host dir.
+      - /opt/agentic-qa/installers:/data/installers:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -65,10 +68,20 @@ services:
       dockerfile: infrastructure/docker/web.Dockerfile
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+        HELP_DOCS_URL: http://user-docs:3020
     depends_on:
       - api
     ports:
       - "127.0.0.1:3004:3004"
+    restart: unless-stopped
+
+  # User manual (Fumadocs) — nginx serves prooflineqa.com/help/* from this container.
+  user-docs:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/user-docs.Dockerfile
+    ports:
+      - "127.0.0.1:3020:3020"
     restart: unless-stopped
 
   admin:

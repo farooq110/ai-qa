@@ -2,12 +2,15 @@
 FROM node:22-slim AS build
 ARG NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+# Where the user-docs app lives for /help rewrites (user-docs container in prod)
+ARG HELP_DOCS_URL
+ENV HELP_DOCS_URL=$HELP_DOCS_URL
 RUN corepack enable && corepack prepare pnpm@10.30.1 --activate
 WORKDIR /repo
 
 COPY . .
 RUN pnpm install --frozen-lockfile \
- && pnpm --filter @ai-qa/web build
+ && pnpm --filter "@ai-qa/web..." run build
 
 FROM node:22-slim
 WORKDIR /app

@@ -1,0 +1,9 @@
+{
+  "title": "Dashboard",
+  "defaultOpen": false,
+  "pages": [
+    "project-control-center",
+    "analyzing-your-repository",
+    "regenerating-tests"
+  ]
+}

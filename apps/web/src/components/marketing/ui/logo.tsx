@@ -1,6 +1,6 @@
 type LogoProps = { className?: string; withWordmark?: boolean };
 
-/** Proofline mark: a review line with an approved node. */
+/** ProoflineQA mark: a review line with an approved node. */
 export function Logo({ className = "", withWordmark = true }: LogoProps) {
   return (
     <span className={`inline-flex items-center gap-2.5 ${className}`}>
@@ -13,7 +13,7 @@ export function Logo({ className = "", withWordmark = true }: LogoProps) {
         <path d="M16 9h6M16 13h4" stroke="#7f8c8a" strokeWidth="1.8" strokeLinecap="round" />
         <path d="M16 18.5h6" stroke="#35d08f" strokeWidth="1.8" strokeLinecap="round" />
       </svg>
-      {withWordmark && <span className="text-[17px] font-semibold tracking-[-0.02em] text-fg">Proofline</span>}
+      {withWordmark && <span className="text-[17px] font-semibold tracking-[-0.02em] text-fg">ProoflineQA</span>}
     </span>
   );
 }

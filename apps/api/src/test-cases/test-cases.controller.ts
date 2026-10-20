@@ -1,10 +1,13 @@
 import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
 import { AuthGuard } from "../auth/auth.guard";
+import { PermissionsGuard, RequirePermission } from "../rbac/permissions.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import type { AuthenticatedUser } from "../auth/auth.types";
 import { TestCasesService } from "./test-cases.service";
+import { PERMISSIONS } from "@ai-qa/domain";
 
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, PermissionsGuard)
+@RequirePermission(PERMISSIONS.TEST_CASES_VIEW)
 @Controller("v1/projects/:projectId/test-cases")
 export class TestCasesController {
   constructor(private readonly testCasesService: TestCasesService) {}
@@ -62,13 +65,15 @@ export class TestCasesController {
     return this.testCasesService.bulkDelete(user, projectId, body.testCaseIds);
   }
 
+  @RequirePermission(PERMISSIONS.TEST_CASES_EDIT)
   @Post("bulk/classify") bulkClassify(@CurrentUser() user: AuthenticatedUser, @Param("projectId") projectId: string, @Body() body: { testCaseIds?: string[]; addModuleIds?: string[]; removeModuleIds?: string[]; addTagIds?: string[]; removeTagIds?: string[]; moveModuleId?: string }) {
     if (!body.testCaseIds?.length) throw new BadRequestException("testCaseIds is required");
     return this.testCasesService.bulkClassify(user, projectId, body as { testCaseIds: string[] });
   }
 }
 
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, PermissionsGuard)
+@RequirePermission(PERMISSIONS.TEST_CASES_VIEW)
 @Controller("v1/test-cases")
 export class TestCasesLibraryController {
   constructor(private readonly testCasesService: TestCasesService) {}

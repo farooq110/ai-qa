@@ -8,6 +8,7 @@ import { faqs } from "@/content/faq";
 import { ButtonLink } from "@/components/marketing/ui/button-link";
 import { Logo } from "@/components/marketing/ui/logo";
 import { HeaderTabs, type HeaderTab } from "@/components/marketing/motion/header-tabs";
+import Link from "next/link";
 
 const tabs: readonly HeaderTab[] = [
   { href: "#review", label: "Review", count: lifecycle.stages.length, icon: <GitPullRequest size={15} aria-hidden /> },
@@ -21,9 +22,9 @@ export function SiteHeader() {
   return (
     <header className="sticky top-0 z-40 border-b border-line bg-ground/85 backdrop-blur-md supports-[backdrop-filter]:bg-ground/70">
       <div className="mkt-shell flex h-16 items-center gap-5">
-        <a href="#top" aria-label="Proofline home" className="rounded-md">
+        <Link href="#top" aria-label="ProoflineQA home" className="rounded-md">
           <Logo />
-        </a>
+        </Link>
 
         <nav aria-label="Primary" className="hidden h-full md:block">
           <HeaderTabs tabs={tabs} ids={sectionIds} />
@@ -31,6 +32,9 @@ export function SiteHeader() {
 
         <div className="ml-auto flex items-center gap-2">
           <span className="hidden sm:contents">
+            <ButtonLink href="/help" variant="ghost">
+              Docs
+            </ButtonLink>
             <ButtonLink href={site.links.signin} variant="ghost">
               Sign in
             </ButtonLink>
@@ -54,6 +58,9 @@ export function SiteHeader() {
                   </li>
                 ))}
                 <li className="mt-1 border-t border-line pt-1">
+                  <a href="/help" className="block rounded-md px-3 py-2.5 text-[15px] text-dim hover:bg-raised hover:text-fg">
+                    Docs
+                  </a>
                   <a href={site.links.signin} className="block rounded-md px-3 py-2.5 text-[15px] text-dim hover:bg-raised hover:text-fg">
                     Sign in
                   </a>

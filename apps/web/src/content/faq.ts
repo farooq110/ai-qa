@@ -10,7 +10,7 @@ export const faqs: readonly Faq[] = [
     a: "Normally zero. CI executes the approved snapshot of your tests with Playwright. AI is only used when you analyze or regenerate."
   },
   {
-    q: "Which applications can Proofline analyze today?",
+    q: "Which applications can ProoflineQA analyze today?",
     a: "The first analyzer targets React and TypeScript applications built with Vite. It combines static analysis of routes, components, forms and API calls with controlled browser discovery."
   },
   {
@@ -22,7 +22,7 @@ export const faqs: readonly Faq[] = [
     a: "Repositories on GitHub and Bitbucket. Pipelines on GitHub Actions, GitLab CI and Bitbucket Pipelines, reporting queued, running, passed, failed, cancelled and blocked states."
   },
   {
-    q: "Does Proofline test production automatically?",
+    q: "Does ProoflineQA test production automatically?",
     a: "No. You choose the environment for each run, and the deployment URL must match the branch or commit you selected."
   },
   {

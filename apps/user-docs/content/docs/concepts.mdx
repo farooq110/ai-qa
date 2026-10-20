@@ -1,0 +1,42 @@
+---
+title: Concepts
+description: The objects and rules behind ProoflineQA, and what it supports today.
+---
+
+## The model
+
+| Object | What it is |
+| --- | --- |
+| **Organization** | The workspace: members, billing, repository providers. |
+| **Project** | One app in one repository (optionally a subdirectory). Has its own tests, environments, and CI settings. |
+| **Analysis** | A map of routes and components at a commit. Tests are anchored to it. |
+| **Test case** | A titled, ordered list of steps with a category, priority, and expected result. |
+| **Version** | An immutable revision of a test. Editing creates a new version. |
+| **Environment** | A deployed URL (and optional credentials) a run targets. |
+| **Run** | One execution of approved tests against one environment at one commit. Immutable. |
+
+## Lifecycle and the approval gate
+
+Generated or hand-written tests start as **Pending review**. A reviewer approves a **version**. Only approved versions run; an edit creates a new version that needs approval again. This holds for dashboard runs and CI alike. See [Reviewing AI tests](/docs/test-cases/reviewing-ai-tests).
+
+## Analysis, generation, regeneration
+
+Analysis reads your repository and optionally crawls the environment URL. Generation drafts candidates from that map. Regeneration only **adds** candidates; it never edits or removes existing tests. See [Analysis and generation](/docs/dashboard/analyzing-your-repository).
+
+## Where things run
+
+Tests run in a headless browser operated by ProoflineQA, against a URL reachable from the public internet. Your repository is read through your Git provider connection. See [Security](/docs/security).
+
+## Supported stacks and limits
+
+| | Today |
+| --- | --- |
+| Frameworks analyzed | React Router and Next.js |
+| Files read | `.ts`, `.tsx`, `.js`, `.jsx`; under 250 KB each; at most 300 files |
+| Live discovery | Up to 10 pages of the environment URL |
+| Step timeout | 8 seconds by default |
+| Retries | None for steps or tests |
+| Concurrency | Per plan: concurrent **runs**; tests inside a run execute sequentially |
+| Plan limits | AI tokens per month, concurrent runs, projects |
+
+Detail: [Test steps reference](/docs/reference/test-steps) · [CI reference](/docs/reference/ci).

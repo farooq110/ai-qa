@@ -1,0 +1,60 @@
+---
+title: Results and Checks
+description: Where CI results appear — on your commits and pull requests, and in ProoflineQA.
+---
+
+Every deployment that matches your CI settings produces a **CI run**. You'll see its result in two places.
+
+## On your commit or pull request
+
+ProoflineQA reports to your provider as soon as a run is queued, then updates it as the run progresses. The report is named **Proofline · *project name*** and links back to the run.
+
+| Provider | Appears as |
+| --- | --- |
+| GitHub | A **check run** on the commit, and on the pull request when there is one. |
+| GitLab | A **commit status** on the commit and on the merge request. |
+| Bitbucket | A **build status** on the commit. |
+
+The description tells you how the run is going, for example *Running 4/12 tests, 1 failed so far*, *All 12 tests passed*, or *3 of 12 tests failed*.
+
+### Blocking merges
+
+To stop merges on failing tests, mark the check as **required** in your provider's branch protection (GitHub: *Settings → Branches → Require status checks*). ProoflineQA never blocks a merge for its own reasons: when a run can't start (see *Skipped* below) GitHub shows a **neutral** check, and GitLab and Bitbucket show **success** with *"Skipped: reason"*.
+
+## On the CI / CD page
+
+The **Recent runs** panel lists the latest five runs for the project:
+
+| Column | Meaning |
+| --- | --- |
+| **When** | How long ago the deployment arrived. |
+| **Branch** | The branch, with `#number` for a pull request. |
+| **Commit** | The short commit code that was tested. |
+| **Target** | The URL the tests visited. |
+| **Result** | The run's state, and a **passed / total** link that opens it on the [Executions](/docs/executions/viewing-results) page (trigger *ci*). |
+
+The full history for every run is on the Executions page.
+
+## Run states
+
+| State | Meaning |
+| --- | --- |
+| **Queued** | Waiting to start. If your organization is already at its plan's concurrent-run limit, CI waits for a free slot — nothing is dropped. |
+| **Running** | Tests are executing. |
+| **Passed** | Every test passed. |
+| **Failed** | One or more tests failed — open the run for the failing step, screenshot, and log. |
+| **Canceled** | A newer commit was deployed on the same branch, so this older run was stopped (*"Superseded by …"*), or someone canceled it. |
+| **Skipped** | The run couldn't start. The reason is shown on the row. |
+
+### Why a run is skipped
+
+| Reason | Fix |
+| --- | --- |
+| *No approved tests yet* | Approve tests in [Test cases](/docs/test-cases/reviewing-ai-tests). |
+| *The deployment did not include a URL* | The host reported a deployment without an address. Make the deploy job declare an environment URL, or switch to **A saved environment**. |
+| *Billing is …* | Your subscription is locked or incomplete — see [Billing statuses](/docs/billing/billing-statuses). |
+| *No environment is mapped to … any more* | The environment was deleted. Pick another for that branch. |
+
+## Only the newest commit counts
+
+When a new commit is deployed on a branch while an older run is still queued or running, the older run is canceled. This saves run slots and keeps the check on your latest commit meaningful.

@@ -1,0 +1,11 @@
+{
+  "title": "CI / CD",
+  "defaultOpen": false,
+  "pages": [
+    "how-ci-works",
+    "setting-up-ci",
+    "provider-setup",
+    "results-and-checks",
+    "troubleshooting"
+  ]
+}

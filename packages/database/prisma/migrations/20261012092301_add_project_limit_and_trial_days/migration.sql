@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "PricingPlan" ADD COLUMN     "projectLimit" INTEGER NOT NULL DEFAULT 5,
+ADD COLUMN     "trialDays" INTEGER NOT NULL DEFAULT 7;
