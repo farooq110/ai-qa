@@ -1,0 +1,51 @@
+{
+  "name": "@ai-qa/recorder",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Proofline Recorder — desktop companion that opens the target app and records manual test steps.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "ELECTRON_DISABLE_SANDBOX=1 electron .",
+    "start": "ELECTRON_DISABLE_SANDBOX=1 electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.prooflineqa.recorder",
+    "productName": "Proofline Recorder",
+    "afterPack": "scripts/remove-chrome-sandbox.js",
+    "protocols": [
+      {
+        "name": "Proofline Recorder",
+        "schemes": [
+          "proofline-recorder"
+        ]
+      }
+    ],
+    "files": [
+      "main.js",
+      "recorder-script.js",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "artifactName": "ProoflineRecorder-Setup.exe"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false
+    },
+    "mac": {
+      "target": "dmg",
+      "artifactName": "ProoflineRecorder.dmg"
+    },
+    "linux": {
+      "target": "AppImage",
+      "artifactName": "ProoflineRecorder.AppImage",
+      "category": "Development"
+    }
+  }
+}

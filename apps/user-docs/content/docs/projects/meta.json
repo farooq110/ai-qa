@@ -1,0 +1,8 @@
+{
+  "title": "Projects",
+  "defaultOpen": false,
+  "pages": [
+    "connecting-a-repository",
+    "managing-projects"
+  ]
+}

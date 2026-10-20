@@ -1,9 +1,9 @@
-import type { OrganizationRole } from "@prisma/client";
+import type { APP_ROLES } from "@ai-qa/domain";
 
 export interface AuthenticatedUser {
   userId: string;
   organizationId: string;
-  role: OrganizationRole;
+  role: APP_ROLES;
 }
 
 export interface AccessTokenPayload extends AuthenticatedUser {

@@ -1,0 +1,33 @@
+---
+title: Repository Providers
+description: Connect GitHub, Bitbucket, or GitLab so ProoflineQA can read repositories and report CI results.
+---
+
+Open **Settings → Organization → Repository providers**. Connecting and removing accounts is limited to Admins (settings-manage permission). Other members need an Admin to connect before they can import or analyze.
+
+## GitHub
+
+ProoflineQA uses a **GitHub App**. Click **Connect GitHub**, choose the account or organization, and choose all or selected repositories.
+
+- If you are not an owner of the GitHub organization, GitHub records an **install request**. An owner approves it on GitHub, then you connect again.
+- To change which repositories are visible, run the install flow again from the same button or from **Import repository**.
+- The App's permissions are also what CI uses. If GitHub asks for updated permissions, an owner must accept them; see [Troubleshooting](/docs/ci-cd/troubleshooting).
+
+## Bitbucket and GitLab.com
+
+**Connect** opens the provider's consent page for ProoflineQA's OAuth application. Nothing to register. Requested access:
+
+| Provider | Access | Why |
+| --- | --- | --- |
+| Bitbucket | account, repository, pull request, webhook | Read code, register the CI webhook, post build status. |
+| GitLab | `api` | Read code, register the CI webhook, post commit status. `read_api` is not enough. |
+
+## Self-managed GitLab
+
+Add your instance once (Admin). Register an OAuth application on your instance using the callback address shown in the dialog, then paste its Client ID and Secret. The secret is stored encrypted and not shown again. Removing the instance deletes the application from ProoflineQA; accounts connected through it keep working until their access tokens expire (about two hours).
+
+## Disconnect
+
+Disconnecting an account stops analysis, generation, and CI reporting that use it, until it is connected again. Projects, tests, and run history are kept. If a token cannot be refreshed, the error asks you to disconnect and connect the account again.
+
+Next: [Import a repository](/docs/projects/connecting-a-repository).

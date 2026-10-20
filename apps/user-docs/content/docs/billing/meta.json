@@ -1,0 +1,10 @@
+{
+  "title": "Billing",
+  "defaultOpen": false,
+  "pages": [
+    "plans-and-intervals",
+    "managing-your-subscription",
+    "usage-and-quotas",
+    "billing-statuses"
+  ]
+}

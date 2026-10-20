@@ -1,0 +1,22 @@
+{
+  "title": "Documentation",
+  "pages": [
+    "index",
+    "concepts",
+    "---Guides---",
+    "getting-started",
+    "projects",
+    "dashboard",
+    "test-cases",
+    "executions",
+    "ci-cd",
+    "---Administration---",
+    "settings",
+    "team",
+    "billing",
+    "---Reference---",
+    "...reference",
+    "security",
+    "help"
+  ]
+}

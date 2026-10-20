@@ -12,9 +12,26 @@ export interface SubscriptionContext {
   remainingTokens: number;
   billingLocked: boolean;
   currentPeriodEnd: Date | null;
+  trialDaysLeft: number | null;
 }
 
-const activeStatuses = new Set(["TRIALING", "ACTIVE", "PAYMENT_WARNING", "PAST_DUE"]);
+/**
+ * One end date for everything: `currentPeriodEnd` is the trial end while TRIALING (Stripe's period end equals trial_end).
+ * Only the DB-managed "trial" plan lapses locally; Stripe-managed subscriptions follow Stripe's own status.
+ */
+type SubscriptionLike = { status: string; currentPeriodEnd: Date | null; plan: { key: string } | null };
+export function effectiveStatus(subscription: SubscriptionLike | null | undefined) {
+  if (!subscription) return "TRIALING";
+  const lapsed = subscription.status === "TRIALING" && subscription.plan?.key === "trial" && subscription.currentPeriodEnd !== null && subscription.currentPeriodEnd.getTime() < Date.now();
+  return lapsed ? "EXPIRED" : subscription.status;
+}
+export function trialDaysLeft(subscription: SubscriptionLike | null | undefined) {
+  if (!subscription || subscription.status !== "TRIALING" || !subscription.currentPeriodEnd || effectiveStatus(subscription) === "EXPIRED") return null;
+  return Math.max(0, Math.ceil((subscription.currentPeriodEnd.getTime() - Date.now()) / 86400000));
+}
+
+// PAST_DUE is deliberately not active: an unpaid renewal pauses the product until the payment goes through.
+const activeStatuses = new Set(["TRIALING", "ACTIVE", "PAYMENT_WARNING"]);
 
 export async function subscriptionContext(prisma: PrismaService, organizationId: string): Promise<SubscriptionContext> {
   const subscription = await prisma.subscription.findUnique({ where: { organizationId }, include: { plan: true } });
@@ -25,10 +42,12 @@ export async function subscriptionContext(prisma: PrismaService, organizationId:
     where: { organizationId, createdAt: { gte: monthStart } },
     _sum: { inputTokens: true, outputTokens: true }
   });
-  const status = subscription?.status ?? "TRIALING";
   const tokenQuotaMonthly = subscription?.plan?.tokenQuotaMonthly ?? 1_000_000;
   const inputTokens = usageAggregate._sum.inputTokens ?? 0;
   const outputTokens = usageAggregate._sum.outputTokens ?? 0;
+  // Free-trial freeze: when the Trial plan's window lapses the organization drops to read-only
+  // (EXPIRED is not an active status, so every billing gate engages) until a paid plan is purchased.
+  const status = effectiveStatus(subscription);
   return {
     status,
     planKey: subscription?.plan?.key ?? "trial",
@@ -39,11 +58,15 @@ export async function subscriptionContext(prisma: PrismaService, organizationId:
     usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens },
     remainingTokens: Math.max(0, tokenQuotaMonthly - (inputTokens + outputTokens)),
     billingLocked: !activeStatuses.has(status),
-    currentPeriodEnd: subscription?.currentPeriodEnd ?? null
+    currentPeriodEnd: subscription?.currentPeriodEnd ?? null,
+    trialDaysLeft: trialDaysLeft(subscription)
   };
 }
 
 export function assertBillingActive(context: SubscriptionContext, action: string) {
+  if (context.status === "INCOMPLETE") throw new ForbiddenException(`${action} is blocked until you choose a plan and start your trial in Billing`);
+  if (context.status === "EXPIRED") throw new ForbiddenException(`${action} is blocked because your free trial has ended — subscribe to a plan in Billing to continue`);
+  if (context.status === "PAST_DUE") throw new ForbiddenException(`${action} is blocked because your last payment failed — update your card in Billing to resume`);
   if (context.billingLocked) throw new ForbiddenException(`${action} is blocked because the organization billing is ${context.status.toLowerCase().replace("_", " ")}`);
 }
 
@@ -55,13 +78,14 @@ export function assertQuota(context: SubscriptionContext, estimatedTokens: numbe
 
 export async function recordUsage(
   prisma: PrismaService,
-  record: { organizationId: string; projectId?: string; generationRunId?: string; provider: string; model: string; inputTokens: number; outputTokens: number; cachedTokens?: number; estimatedCostUsd?: number }
+  record: { organizationId: string; projectId?: string; generationRunId?: string; analysisRunId?: string; provider: string; model: string; inputTokens: number; outputTokens: number; cachedTokens?: number; estimatedCostUsd?: number }
 ) {
   await prisma.aiUsageRecord.create({
     data: {
       organizationId: record.organizationId,
       projectId: record.projectId,
       generationRunId: record.generationRunId,
+      analysisRunId: record.analysisRunId,
       provider: record.provider,
       model: record.model,
       inputTokens: record.inputTokens,

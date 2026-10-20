@@ -1,5 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
 }
 
 datasource db {
@@ -14,6 +15,7 @@ enum OrganizationRole {
 }
 
 enum SubscriptionStatus {
+  INCOMPLETE
   TRIALING
   ACTIVE
   PAYMENT_WARNING
@@ -24,6 +26,8 @@ enum SubscriptionStatus {
 }
 
 enum TestStatus {
+  /// Generated but not yet dry-run verified - never shown in review lists or counts.
+  DRAFT
   PENDING_REVIEW
   APPROVED
   NEEDS_REVIEW
@@ -88,10 +92,11 @@ enum ArtifactKind {
   LOG
 }
 
-enum CiProviderName {
-  GITHUB_ACTIONS
-  GITLAB_CI
-  BITBUCKET_PIPELINES
+
+enum SupportQueryStatus {
+  OPEN
+  RESOLVED
+  REJECTED
 }
 
 model User {
@@ -99,6 +104,7 @@ model User {
   email          String                  @unique
   displayName    String
   passwordHash   String
+  emailVerifiedAt DateTime?
   isSuperadmin   Boolean                 @default(false)
   membership     OrganizationMembership?
   createdAt      DateTime                @default(now())
@@ -116,22 +122,52 @@ model Organization {
   modules               TestModule[]
   tags                  TestTag[]
   repositoryConnections RepositoryConnection[]
+  rolePermissions       RolePermission[]
+  integrationCredentials IntegrationCredential[]
   createdAt             DateTime                @default(now())
 }
 
+// GitHub: one row per GitHub App installation (installationId set, no stored token — installation
+// tokens are minted on demand). GitLab/Bitbucket: one row per OAuth grant with encrypted tokens.
 model RepositoryConnection {
-  id                    String             @id @default(cuid())
-  organizationId        String
-  provider              RepositoryProvider
-  externalAccountId     String
-  accountLogin          String
-  accessTokenCiphertext String
-  accessTokenIv         String
-  accessTokenTag        String
-  createdAt             DateTime           @default(now())
-  updatedAt             DateTime           @updatedAt
-  organization          Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  @@unique([organizationId, provider, externalAccountId])
+  id                     String             @id @default(cuid())
+  organizationId         String
+  provider               RepositoryProvider
+  // "" = the provider's SaaS host; otherwise a self-managed GitLab instance (BYO OAuth app).
+  baseUrl                String             @default("")
+  externalAccountId      String
+  accountLogin           String
+  installationId         String?
+  accessTokenCiphertext  String?
+  accessTokenIv          String?
+  accessTokenTag         String?
+  refreshTokenCiphertext String?
+  refreshTokenIv         String?
+  refreshTokenTag        String?
+  accessTokenExpiresAt   DateTime?
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+  organization           Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  projects               Project[]
+  @@unique([organizationId, provider, baseUrl, externalAccountId])
+}
+
+// Per-organization OAuth client credentials for third-party integrations. For repository providers
+// this is only the self-managed GitLab fallback (baseUrl set); SaaS providers use platform apps.
+// `provider` is intentionally a String so new providers need no migration.
+model IntegrationCredential {
+  id                     String       @id @default(cuid())
+  organizationId         String
+  provider               String
+  baseUrl                String       @default("")
+  clientId               String
+  clientSecretCiphertext String
+  clientSecretIv         String
+  clientSecretTag        String
+  createdAt              DateTime     @default(now())
+  updatedAt              DateTime     @updatedAt
+  organization           Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  @@unique([organizationId, provider])
 }
 
 model OrganizationMembership {
@@ -143,6 +179,22 @@ model OrganizationMembership {
   user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
+model RolePermission {
+  id             String           @id @default(cuid())
+  organizationId String
+  role           OrganizationRole
+  permissions    String[]
+  updatedAt      DateTime         @updatedAt
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  @@unique([organizationId, role])
+}
+
+enum BillingInterval {
+  MONTHLY
+  QUARTERLY
+  YEARLY
+}
+
 model PricingPlan {
   id                    String  @id @default(cuid())
   key                   String  @unique
@@ -152,20 +204,47 @@ model PricingPlan {
   warningThresholdPct   Int     @default(80)
   executionSlotLimit    Int     @default(5)
   retentionDays         Int     @default(30)
+  projectLimit          Int     @default(5)
+  trialDays             Int     @default(7)
   isActive              Boolean @default(true)
+  stripeProductId       String? @unique
+  prices                PlanPrice[]
   subscriptions         Subscription[]
+}
+
+model PlanPrice {
+  id              String          @id @default(cuid())
+  planId          String
+  interval        BillingInterval
+  stripePriceId   String          @unique
+  lookupKey       String?
+  unitAmountCents Int
+  currency        String          @default("usd")
+  isActive        Boolean         @default(true)
+  plan            PricingPlan     @relation(fields: [planId], references: [id], onDelete: Cascade)
+  subscriptions   Subscription[]
+}
+
+model BillingEvent {
+  id        String   @id
+  type      String
+  createdAt DateTime @default(now())
 }
 
 model Subscription {
   id                   String             @id @default(cuid())
   organizationId       String             @unique
-  stripeCustomerId     String             @unique
+  stripeCustomerId     String?            @unique
   stripeSubscriptionId String?            @unique
   planId               String?
-  status               SubscriptionStatus @default(TRIALING)
+  priceId              String?
+  status               SubscriptionStatus @default(INCOMPLETE)
   currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean            @default(false)
+  createdAt            DateTime           @default(now())
   organization         Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   plan                 PricingPlan?       @relation(fields: [planId], references: [id], onDelete: SetNull)
+  price                PlanPrice?         @relation(fields: [priceId], references: [id], onDelete: SetNull)
 }
 
 model AiUsageRecord {
@@ -173,6 +252,7 @@ model AiUsageRecord {
   organizationId   String
   projectId        String?
   generationRunId  String?
+  analysisRunId    String?
   provider         String
   model            String
   inputTokens      Int           @default(0)
@@ -201,15 +281,51 @@ model Project {
   id             String      @id @default(cuid())
   organizationId String
   name           String
-  repositoryUrl  String
+  // Imported from a connected account. repositoryUrl is the provider's web URL (display only);
+  // repoFullName is the API path (owner/repo, workspace/slug, group/sub/project).
+  provider               RepositoryProvider
+  repositoryConnectionId String?
+  externalRepoId         String      @default("")
+  repoFullName           String
+  repositoryUrl          String
+  // Subfolder analysis is scoped to ("" = repository root) — several projects may share one repo.
+  rootDirectory          String      @default("")
+  // Extra top-level directories (relative to the repo root) holding backend code outside rootDirectory,
+  // e.g. ["api"] when the frontend is in rootDirectory and the backend lives in a sibling folder.
+  backendDirectories     String[]    @default([])
   defaultBranch  String      @default("main")
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  repositoryConnection RepositoryConnection? @relation(fields: [repositoryConnectionId], references: [id], onDelete: SetNull)
   tests          TestCase[]
   analysisRuns   AnalysisRun[]
   executionPlans ExecutionPlan[]
   generationRuns GenerationRun[]
   environments   EnvironmentProfile[]
-  ciConnections  CiConnection[]
+  routes         ProjectRoute[]
+  llmCache       LlmCache[]
+  flowSpecs      FlowSpec[]
+  // CI: run approved tests when a commit on a matching branch is deployed.
+  // ciBranchRules: [{ pattern: "main" | "release/*", environmentId?: string }] — environmentId is the
+  // Bitbucket target (Bitbucket sends no deployment URL); GitHub/GitLab take the URL from the deployment.
+  ciEnabled             Boolean     @default(false)
+  // DEPLOYMENT: test the URL a deployment event reports (preview deploys). PIPELINE: when the repo's
+  // pipeline succeeds, test the environment mapped to the branch (fixed URL). Bitbucket is always PIPELINE.
+  ciTriggerMode         CiTriggerMode @default(DEPLOYMENT)
+  // GitHub PIPELINE mode: the workflow whose success means "deployed"; * wildcard, "" = unset.
+  ciWorkflowName        String      @default("")
+  ciBranchRules         Json        @default("[]")
+  ciPullRequests        Boolean     @default(false)
+  // Headers sent only to the tested site's origin, for deployments behind an access wall (Vercel
+  // Deployment Protection, Cloudflare Access): [{ name, enc, iv, tag }], values AES-256-GCM encrypted.
+  ciBypassHeaders       Json        @default("[]")
+  // Glob on the provider's deployment environment name ("Preview – web"); "" = any. Monorepo projects use it.
+  ciEnvironmentFilter   String      @default("")
+  // Repository webhook we registered (GitLab/Bitbucket; GitHub uses the app-level webhook).
+  ciHookId              String?
+  ciHookSecretCiphertext String?
+  ciHookSecretIv        String?
+  ciHookSecretTag       String?
+  ciRuns                CiRun[]
   createdAt      DateTime    @default(now())
 }
 
@@ -225,14 +341,60 @@ model EnvironmentProfile {
   usernameSelector String?
   passwordSelector String?
   submitSelector   String?
+  // Known-good route parameter values: { "/customiser": { "modelCode": "X", "projectId": "Y" } }
+  routeFixtures    Json?
   usernameEnc      String?
   usernameIv       String?
   usernameTag      String?
   passwordEnc      String?
   passwordIv       String?
   passwordTag      String?
+  // Saved Playwright storageState (cookies + localStorage + IndexedDB) from the last successful
+  // login: reused across analysis/verify/execution runs so each one does not log in again and trip
+  // the app's own per-IP login rate limit. Re-encrypted after every real login.
+  sessionStateEnc  String?
+  sessionStateIv   String?
+  sessionStateTag  String?
+  sessionSavedAt   DateTime?
   project          Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   @@unique([projectId, name])
+}
+
+enum RouteStatus {
+  DISCOVERED
+  VERIFIED
+  UNREACHABLE
+}
+
+/// One page of the tested app. Built by analysis (live crawl + code hints) and refined by users.
+model ProjectRoute {
+  id             String      @id @default(cuid())
+  projectId      String
+  /// Route pattern, e.g. /orders/:id
+  pattern        String
+  label          String?
+  /// Position in the app's navigation (lower = earlier).
+  navOrder       Int?
+  /// crawl | sitemap | code | llm | recorder | user | hint
+  sources        String[]
+  status         RouteStatus @default(DISCOVERED)
+  /// Why the route is not VERIFIED.
+  reason         String?
+  pinned         Boolean     @default(false)
+  excluded       Boolean     @default(false)
+  requiresAuth   Boolean?
+  /// [{ name, in: "path"|"query", samples: string[] }]
+  params         Json?
+  /// Source file of the page when a code adapter found it.
+  pageFile       String?
+  /// Last crawl of the page (controls, headings, ...).
+  inventory      Json?
+  apiCalls       String[]
+  lastVerifiedAt DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  project        Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  @@unique([projectId, pattern])
 }
 
 model AnalysisRun {
@@ -243,10 +405,56 @@ model AnalysisRun {
   commitSha      String
   status         AnalysisStatus @default(QUEUED)
   knowledgeModel Json?
+  // {modulesPlanned, modulesDone, modulesCached, stage} - read by the UI while flow-spec
+  // generation runs in parallel with the crawl (Phase 4).
+  progress       Json?
   errorMessage   String?
   project        Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
   createdAt      DateTime       @default(now())
   completedAt    DateTime?
+}
+
+/**
+ * One module's flow spec (Phase 4): a typed, source-anchored description of what a module's
+ * actions do, built once per (module, slice) and reused until the slice's own hash changes - a
+ * cosmetic edit to an unrelated file never invalidates it. `spec` holds the FlowSpecData shape
+ * from @ai-qa/contracts; `files` is [{path, hash, role}] for the slice that produced it.
+ */
+model FlowSpec {
+  id             String   @id @default(cuid())
+  projectId      String
+  analysisRunId  String
+  moduleKey      String
+  name           String
+  sliceHash      String
+  spec           Json
+  files          Json
+  stats          Json
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([projectId, moduleKey, sliceHash])
+}
+
+/**
+ * Cached LLM output, keyed by a hash of its own inputs (plus prompt/schema version and model), so
+ * a re-run that touches nothing this call depends on makes 0 LLM calls. kind namespaces different
+ * callers ("endpoints": Phase 3 backend endpoint discovery; "chunk"/"conventions": Phase 4 specs)
+ * sharing one table instead of one per caller.
+ */
+model LlmCache {
+  id           String   @id @default(cuid())
+  projectId    String
+  kind         String
+  key          String
+  output       Json
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now())
+
+  @@unique([projectId, kind, key])
 }
 
 model TestCase {
@@ -264,6 +472,13 @@ model TestCase {
   version        Int         @default(1)
   generatedFromCommit String?
   lastValidatedCommit String?
+  generationRunId String?
+  /// Dry-run verification outcome: { round, outcome, reason, attempts[], mutation }
+  verification   Json?
+  /// Phase 5 planner key: "module:action:category:ruleId|variant". Unique per project so a
+  /// re-plan never duplicates a scenario; archiving a test clears this (see test-cases.service.ts)
+  /// so the same scenario can be re-planned later.
+  scenarioKey    String?
   project        Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
   versions       TestCaseVersion[]
   modules        TestModuleMembership[]
@@ -271,6 +486,8 @@ model TestCase {
   executionItems ExecutionPlanItem[]
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @default(now()) @updatedAt
+
+  @@unique([projectId, scenarioKey])
 }
 
 model TestCaseVersion {
@@ -298,6 +515,8 @@ model GenerationRun {
   created         Int?
   duplicatesSkipped Int?
   errorMessage   String?
+  /// { stage, wave, budgetTokens, planned, generated, verified, heldOut, skipped: [{scenarioKey?, reason}] }
+  report         Json?
   project        Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
   createdAt      DateTime         @default(now())
   completedAt    DateTime?
@@ -317,6 +536,7 @@ model ExecutionPlan {
   project        Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
   items          ExecutionPlanItem[]
   artifacts      Artifact[]
+  ciRun          CiRun?
   createdAt      DateTime        @default(now())
 }
 
@@ -328,6 +548,8 @@ model ExecutionPlanItem {
   durationMs      Int?
   startedAt       DateTime?
   finishedAt      DateTime?
+  // Live per-step progress written by the worker while the test runs (see StepLogEntry in apps/workers).
+  stepLog         Json?
   executionPlan   ExecutionPlan @relation(fields: [executionPlanId], references: [id], onDelete: Cascade)
   testCase        TestCase      @relation(fields: [testCaseId], references: [id], onDelete: Restrict)
   @@id([executionPlanId, testCaseId])
@@ -340,8 +562,20 @@ model Artifact {
   kind            ArtifactKind
   path            String
   contentType     String       @default("image/png")
+  storage         String       @default("local")
   executionPlan   ExecutionPlan @relation(fields: [executionPlanId], references: [id], onDelete: Cascade)
   createdAt       DateTime     @default(now())
+}
+
+model SupportQuery {
+  id          String             @id @default(cuid())
+  title       String
+  description String
+  email       String
+  imageUrl    String?
+  status      SupportQueryStatus @default(OPEN)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
 }
 
 model AuditEvent {
@@ -357,28 +591,35 @@ model AuditEvent {
   createdAt      DateTime @default(now())
 }
 
-model CiConnection {
-  id         String          @id @default(cuid())
-  projectId  String
-  provider   CiProviderName
-  label      String          @default("Default")
-  tokenHash  String          @unique
-  tokenHint  String
-  lastUsedAt DateTime?
-  createdAt  DateTime        @default(now())
-  project    Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+enum CiTriggerMode {
+  DEPLOYMENT
+  PIPELINE
 }
 
-model CiExecutionRequest {
-  id              String   @id @default(cuid())
+/** One deployment/pipeline event that matched a project's CI rules, and what we reported back for it. */
+model CiRun {
+  id              String             @id @default(cuid())
   projectId       String
-  executionPlanId String?
-  provider        String
+  executionPlanId String?            @unique
+  provider        RepositoryProvider
+  // Deterministic per provider event, so webhook redeliveries are no-ops.
+  deliveryKey     String
   branch          String
   commitSha       String
-  pipelineId      String?
-  status          String   @default("ACCEPTED")
-  createdAt       DateTime @default(now())
+  pullRequest     Int?
+  environmentName String             @default("")
+  environmentUrl  String             @default("")
+  // QUEUED | RUNNING | PASSED | FAILED | CANCELED | SKIPPED
+  status          String             @default("QUEUED")
+  reason          String?
+  // GitHub check run id (GitLab/Bitbucket statuses are keyed by commit + name).
+  externalCheckId String?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  project         Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  executionPlan   ExecutionPlan?     @relation(fields: [executionPlanId], references: [id], onDelete: SetNull)
+  @@unique([projectId, deliveryKey])
+  @@index([projectId, branch, status])
 }
 
 model TestModule {

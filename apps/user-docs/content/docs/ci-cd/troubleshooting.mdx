@@ -1,0 +1,41 @@
+---
+title: Troubleshooting CI
+description: Find out why a deployment didn't start a run.
+---
+
+If you deployed but **Recent runs** stays empty, go through these in order.
+
+## 1. Is CI actually on?
+
+On the CI / CD page, the toggle must be ticked and saved, and the chip beside it must say **listening**. If it says **webhook missing**, untick, **Save**, tick again and **Save** to re-register it. For GitLab or Bitbucket the connected account needs Maintainer / Admin access to the repository.
+
+## 2. Did the deployment match your settings?
+
+| Check | Details |
+| --- | --- |
+| **Branch** | The deployed branch must match a rule. `main` doesn't match `main-2`; use `main*` for that. |
+| **Run tests against** | *The deployed URL* only reacts to **deployments**, not to plain pushes or workflow runs. *A saved environment* only reacts to the chosen workflow or pipeline succeeding. Pushing a commit that nothing deploys starts nothing. |
+| **Deploy workflow** | The name must match the Actions tab exactly (case doesn't matter). A different workflow succeeding doesn't start a run. |
+| **Deployment environment** | If you filled it in, only deployments with a matching environment name are tested. Vercel names its environments `Production` and `Preview`; clear the field unless you deploy several apps from one repository. |
+| **Pull requests** | A pull request's own workflow is ignored by *A saved environment*. Use **PR previews** with *The deployed URL* for those. |
+
+## 3. A run appeared but skipped
+
+Read the reason on the row — see [Results and checks](/docs/ci-cd/results-and-checks#why-a-run-is-skipped).
+
+## 4. The run started but every test failed
+
+| Symptom | Likely cause |
+| --- | --- |
+| Every test fails at its first step with a *401* or a sign-in page | The preview is behind an access wall (for example Vercel *Deployment Protection*). Add its bypass header under **Protected deployments**; see [Protected previews](/docs/ci-cd/provider-setup#protected-previews). |
+| Tests that need a login fail at sign-in | The environment's **Login URL** is a full address of another site. Use a path like `/login`, or leave it empty. See [Environments](/docs/settings/environments). |
+| The page loads but content is old | With *A saved environment*, the run started before the deployment finished. Make the deploy the **last** job of the workflow or pipeline. |
+| Target is `localhost` or a private address | Tests run from ProoflineQA's servers; deploy to a publicly reachable URL. |
+
+## 5. "GitHub will not send this repository's deployments yet"
+
+This message when saving means the Proofline GitHub App on your GitHub account hasn't accepted updated permissions. Ask an **owner** of the GitHub account or organization to open **Settings → Installed GitHub Apps → Proofline → Configure** and accept the pending permission request, then save again.
+
+## 6. "Re-import this repository"
+
+The project was created from a pasted URL (before repository import existed), or the Proofline GitHub App was uninstalled from that account. Delete the project, reconnect the provider in Settings, and import the repository again from **Projects**.

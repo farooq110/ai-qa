@@ -1,0 +1,12 @@
+{
+  "title": "Test Cases",
+  "defaultOpen": false,
+  "pages": [
+    "browsing-the-library",
+    "reviewing-ai-tests",
+    "creating-a-manual-test",
+    "writing-test-steps",
+    "recording-steps",
+    "organizing-tests"
+  ]
+}

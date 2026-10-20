@@ -21,3 +21,13 @@
 .pill.bad { background: #fbe7e0; color: #a34431; }
 .admin-tr select { min-height: 32px; border: 1px solid var(--line); border-radius: 5px; font-size: 12px; padding: 0 6px; }
 .grid.single { grid-template-columns: 1fr; }
+
+/* Plans editor */
+.admin-tr.plan-editor { align-items: center; grid-template-columns: 1.1fr .55fr 1fr .5fr .5fr .6fr .7fr .5fr .4fr .5fr .8fr; }
+.admin-tr.plan-editor input[type="number"], .admin-tr.plan-editor input[type="text"] { width: 100%; min-width: 0; background: #fff; color: #17202a; border: 1px solid #d7dde3; border-radius: 6px; padding: 5px 7px; font-size: 12px; }
+.admin-tr.plan-editor input:focus { outline: none; border-color: #1f7265; box-shadow: 0 0 0 3px rgba(31, 114, 101, .12); }
+.admin-tr.plan-editor input[type="checkbox"] { width: 15px; height: 15px; accent-color: #35d08f; }
+.admin-save { background: #1f7265; color: #fff; border: 0; border-radius: 6px; padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.admin-save:hover { background: #268a7a; }
+.admin-save:disabled { opacity: .45; cursor: default; }
+.admin-refresh { display: inline-flex; align-items: center; gap: 6px; background: #141b20; color: #c9d4d0; border: 1px solid #26303a; border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer; }

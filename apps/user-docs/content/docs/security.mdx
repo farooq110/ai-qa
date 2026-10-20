@@ -1,0 +1,37 @@
+---
+title: Security and Data Handling
+description: What ProoflineQA reads, what is sent to the AI model, and how secrets are stored.
+---
+
+## What is read from your repository
+
+Source files with the extensions `.ts`, `.tsx`, `.js`, and `.jsx` under the project's root directory, plus `package.json`, through the Git connection you authorized. Files of 250 KB or more are skipped and no more than 300 are read. Analysis stores derived data — routes, an import graph, component summaries, a file list, and the commit — not file contents.
+
+## What is sent to the AI model
+
+| Operation | Sent |
+| --- | --- |
+| Test generation | Framework name, capability name, route, and discovered page titles, navigation, buttons, inputs, and headings. Prompts are capped at 14,000 characters. **Source code is not sent.** |
+| AI draft | Your description (up to 2,000 characters) plus routes and controls of up to three discovered pages. |
+| Classification | Test titles, capabilities, and categories. |
+| AI visual check | A screenshot of the page under test, at run time. |
+
+The model provider is the one configured for the ProoflineQA deployment.
+
+## Live discovery
+
+When an environment exists, analysis opens it in a browser (up to 10 pages), records page structure, and stores screenshots as analysis artifacts. Do not point it at an environment that shows data you do not want captured.
+
+## Secrets
+
+- **Environment credentials** and **repository provider secrets** are encrypted with AES-256-GCM. The API returns only whether credentials exist. In test definitions and logs, `{{username}}` and `{{password}}` stay as markers.
+- **Webhook secrets** are generated per project and stored encrypted. See [CI reference](/docs/reference/ci#authentication-of-webhooks).
+- The recorder masks typed passwords as `{{password}}`.
+
+## Evidence
+
+Failure screenshots, step logs, and comparison images are written to object storage (S3) when the deployment configures it, otherwise to local disk.
+
+## Access control
+
+Role permissions are evaluated on every request. See [Roles and permissions](/docs/getting-started/roles-and-permissions).

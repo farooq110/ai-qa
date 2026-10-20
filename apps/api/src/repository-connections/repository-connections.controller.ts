@@ -1,15 +1,17 @@
 import { BadRequestException, Controller, Delete, Get, Param, Query, Res, UseGuards } from "@nestjs/common";
 import type { FastifyReply } from "fastify";
 import { AuthGuard } from "../auth/auth.guard";
+import { PermissionsGuard, RequirePermission } from "../rbac/permissions.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import type { AuthenticatedUser } from "../auth/auth.types";
-import { RepositoryConnectionsService, assertProviderName } from "./repository-connections.service";
+import { RepositoryConnectionsService, assertProviderName, type CallbackQuery } from "./repository-connections.service";
+import { PERMISSIONS } from "@ai-qa/domain";
 
 @Controller("v1/repository-connections")
 export class RepositoryConnectionsController {
   constructor(private readonly connections: RepositoryConnectionsService) {}
 
-  /** Connected accounts for the organization (Settings → Connected accounts). */
+  /** Connected accounts for the organization (Settings → Repository providers). */
   @UseGuards(AuthGuard)
   @Get()
   list(@CurrentUser() user: AuthenticatedUser) {
@@ -17,78 +19,53 @@ export class RepositoryConnectionsController {
   }
 
   /** Disconnect a connected account. Admin only, audited. */
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission(PERMISSIONS.SETTINGS_MANAGE)
   @Delete(":connectionId")
   disconnect(@CurrentUser() user: AuthenticatedUser, @Param("connectionId") connectionId: string) {
     return this.connections.disconnect(user, connectionId);
   }
 
-  /** Start the OAuth dance for github | bitbucket | gitlab. */
-  @UseGuards(AuthGuard)
+  /** Start connecting github | bitbucket | gitlab. `selfManaged=true` targets the org's own GitLab instance. */
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission(PERMISSIONS.SETTINGS_MANAGE)
   @Get(":provider/authorize")
-  async authorize(@CurrentUser() user: AuthenticatedUser, @Param("provider") provider: string) {
-    return this.connections.authorizationUrl(user, assertProviderName(provider));
+  async authorize(@CurrentUser() user: AuthenticatedUser, @Param("provider") provider: string, @Query("selfManaged") selfManaged?: string, @Query("returnTo") returnTo?: string) {
+    return this.connections.authorizationUrl(user, assertProviderName(provider), { selfManaged: selfManaged === "true", returnTo });
   }
 
   @Get(":provider/callback")
-  async callback(@Param("provider") provider: string, @Query("code") code?: string, @Query("state") state?: string, @Res() reply?: FastifyReply) {
+  async callback(@Param("provider") provider: string, @Query() query: CallbackQuery, @Res() reply?: FastifyReply) {
     const name = assertProviderName(provider);
-    const back = (connected: string) => `http://localhost:3004/settings?connected=${connected}&provider=${name.toLowerCase()}`;
+    // WEB_APP_URL is already set in every deployment (auth emails, Stripe returns); without this fallback an unset
+    // PUBLIC_APP_URL sent production users back to localhost after connecting.
+    const webOrigin = (process.env.PUBLIC_APP_URL || process.env.WEB_APP_URL || "http://localhost:3004").replace(/\/$/, "");
+    const back = (returnTo: string, connected: string) => `${webOrigin}${returnTo}?connected=${connected}&provider=${name.toLowerCase()}`;
     if (!reply) throw new BadRequestException("Response unavailable");
     try {
-      if (!code || !state) throw new BadRequestException(`${name.toLowerCase()} callback requires code and state`);
-      await this.connections.completeConnection(name, code, state);
-      return reply.redirect(back(name.toLowerCase()));
-    } catch {
-      // Never render a raw error on the black callback page — send the user
-      // back to Settings where the failure is explained in the UI.
-      return reply.redirect(back("error"));
+      const result = await this.connections.completeConnection(name, query);
+      // Nest pre-sets the reply status to 200 before the handler runs, so the
+      // code must be explicit — otherwise Fastify keeps 200 and browsers ignore
+      // the location header, leaving a blank page on the callback URL.
+      return reply.redirect(back(result.returnTo, result.pending ? "pending" : name.toLowerCase()), 302);
+    } catch (error) {
+      console.error(`Error completing ${name} connection:`, error);
+      // Never render a raw error on the callback page — send the user back where the failure is explained.
+      return reply.redirect(back("/settings", "error"), 302);
     }
   }
 
-  /** Repositories accessible through the connected account. */
+  /** Repositories a connection can import. */
   @UseGuards(AuthGuard)
-  @Get(":provider/repositories")
-  repositories(@CurrentUser() user: AuthenticatedUser, @Param("provider") provider: string) {
-    return this.connections.listRepositories(user, assertProviderName(provider));
+  @Get(":connectionId/repositories")
+  repositories(@CurrentUser() user: AuthenticatedUser, @Param("connectionId") connectionId: string, @Query("search") search?: string) {
+    return this.connections.listRepositories(user, connectionId, search);
   }
 
   @UseGuards(AuthGuard)
-  @Get(":provider/branches")
-  branches(@CurrentUser() user: AuthenticatedUser, @Param("provider") provider: string, @Query("repository") repository?: string) {
+  @Get(":connectionId/branches")
+  branches(@CurrentUser() user: AuthenticatedUser, @Param("connectionId") connectionId: string, @Query("repository") repository?: string) {
     if (!repository) throw new BadRequestException("repository is required");
-    return this.connections.listBranches(user, assertProviderName(provider), repository);
-  }
-
-  // Backward-compatible aliases used by the existing dashboard/projects buttons.
-  @UseGuards(AuthGuard)
-  @Get("github/authorize")
-  authorizeGithub(@CurrentUser() user: AuthenticatedUser) {
-    return this.connections.authorizationUrl(user, "GITHUB");
-  }
-
-  @Get("github/callback")
-  async githubCallback(@Query("code") code?: string, @Query("state") state?: string, @Res() reply?: FastifyReply) {
-    if (!reply) throw new BadRequestException("Response unavailable");
-    try {
-      if (!code || !state) throw new BadRequestException("GitHub callback requires code and state");
-      await this.connections.completeConnection("GITHUB", code, state);
-      return reply.redirect("http://localhost:3004/settings?connected=github&provider=github");
-    } catch {
-      return reply.redirect("http://localhost:3004/settings?connected=error&provider=github");
-    }
-  }
-
-  @UseGuards(AuthGuard)
-  @Get("github/repositories")
-  listGithubRepositories(@CurrentUser() user: AuthenticatedUser) {
-    return this.connections.listRepositories(user, "GITHUB");
-  }
-
-  @UseGuards(AuthGuard)
-  @Get("github/branches")
-  listGithubBranches(@CurrentUser() user: AuthenticatedUser, @Query("repository") repository?: string) {
-    if (!repository) throw new BadRequestException("repository is required");
-    return this.connections.listBranches(user, "GITHUB", repository);
+    return this.connections.listBranches(user, connectionId, repository);
   }
 }

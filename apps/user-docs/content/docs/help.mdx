@@ -1,0 +1,22 @@
+---
+title: Help and FAQ
+description: Common questions, and how to reach support.
+---
+
+## Common questions
+
+**Why did my test not run?** Only approved versions run. After an edit the version is *Needs review*. See [Reviewing AI tests](/docs/test-cases/reviewing-ai-tests).
+
+**Why did a click hit the wrong element?** Click targets match non-strictly and take the first match. See [how click targets resolve](/docs/reference/test-steps#how-click-targets-resolve).
+
+**Why does an assertion fail although the text appears later?** `contains`, `equals`, and `urlMatches` do not wait. Add a **waitFor** step first.
+
+**Why did CI not start a run?** Work through [CI troubleshooting](/docs/ci-cd/troubleshooting).
+
+**Why can't I start a run from the dashboard?** Your organization is at its concurrent-run limit, or billing blocks runs. See [Running tests](/docs/executions/running-tests).
+
+**What leaves my repository?** See [Security and data handling](/docs/security).
+
+## Contact support
+
+Use **Need help?** at the bottom right of the ProoflineQA website. Provide a title, a description, your email, and optionally a screenshot (image, up to 5 MB). Include your **Organization id** from [Account settings](/docs/settings/account).

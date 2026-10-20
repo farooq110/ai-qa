@@ -1,0 +1,166 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ground: #0a0d0f;
+  --color-sunken: #070909;
+  --color-panel: #0f1418;
+  --color-raised: #141b20;
+  --color-line: #1f282e;
+  --color-line-strong: #2c373e;
+  --color-fg: #e9eeec;
+  --color-dim: #a8b3b0;
+  --color-muted: #7f8c8a;
+
+  --color-approve: #35d08f;
+  --color-approve-ink: #04150d;
+  --color-approve-wash: #0f2a1f;
+  --color-pending: #f2b544;
+  --color-pending-wash: #2a2111;
+  --color-change: #ff6b5c;
+  --color-change-wash: #2c1412;
+  --color-ai: #c3ccc9;
+  --color-ai-wash: #182023;
+
+  --font-sans: var(--font-schibsted), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, "SFMono-Regular", monospace;
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --shadow-panel: 0 1px 0 0 rgb(255 255 255 / 0.04) inset, 0 24px 60px -24px rgb(0 0 0 / 0.7), 0 8px 20px -12px rgb(0 0 0 / 0.6);
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 88px;
+    -webkit-text-size-adjust: 100%;
+    background: var(--color-ground);
+  }
+
+  body {
+    background: var(--color-ground);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-feature-settings: "ss01", "cv11";
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--color-approve) 32%, transparent);
+    color: #fff;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-approve);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+
+  a {
+    text-underline-offset: 0.22em;
+    text-decoration-thickness: 1px;
+  }
+
+  input[type="range"] {
+    accent-color: var(--color-approve);
+  }
+
+  * {
+    scrollbar-color: var(--color-line-strong) transparent;
+    scrollbar-width: thin;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line-strong);
+    border-radius: 10px;
+    border: 3px solid var(--color-ground);
+  }
+
+  code,
+  kbd,
+  samp,
+  .font-mono {
+    font-variant-numeric: tabular-nums slashed-zero;
+    font-variant-ligatures: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+  }
+}
+
+@layer components {
+  .shell {
+    margin-inline: auto;
+    width: 100%;
+    max-width: 1240px;
+    padding-inline: 20px;
+  }
+
+  @media (min-width: 768px) {
+    .shell {
+      padding-inline: 32px;
+    }
+  }
+
+  .panel {
+    background: var(--color-panel);
+    border: 1px solid var(--color-line);
+    border-radius: 12px;
+    box-shadow: var(--shadow-panel);
+  }
+
+  .diff-add {
+    background: color-mix(in oklab, var(--color-approve) 9%, transparent);
+  }
+
+  .diff-del {
+    background: color-mix(in oklab, var(--color-change) 9%, transparent);
+  }
+
+}
+
+/* Hero entrance: one orchestrated rise, CSS-only so it runs before hydration. */
+@keyframes hero-rise {
+  from {
+    opacity: 0.35;
+    transform: translateY(14px);
+    filter: blur(8px);
+  }
+}
+
+@keyframes panel-rise {
+  from {
+    opacity: 0.4;
+    transform: translateY(28px) scale(0.985);
+  }
+}
+
+.hero-line {
+  animation: hero-rise 900ms var(--ease-out-expo) both;
+}
+
+.hero-panel {
+  animation: panel-rise 1100ms var(--ease-out-expo) 260ms both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-line,
+  .hero-panel {
+    animation: none;
+  }
+}

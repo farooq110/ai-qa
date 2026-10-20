@@ -1,14 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { Ban, Check, ChevronDown, CircleHelp, PlayCircle, RefreshCw, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Ban, Check, CircleHelp, Download, PlayCircle, RefreshCw, X } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
+import { Select } from "@/components/select";
+import { SegBar } from "@/components/seg-bar";
+import { useFitViewport } from "@/components/use-fit-viewport";
 import { api, apiToken, apiUrl, fmtRelative, shortSha, statusClass, statusLabels } from "@/lib/api";
-import { useProjects, useToast } from "@/lib/hooks";
+import { can, requireSubscription, useMe, useProjects, useToast } from "@/lib/hooks";
+import { PERMISSIONS } from "@ai-qa/domain";
 
 
 
-interface PlanItem { testCaseId: string; status: string; errorMessage: string | null; durationMs: number | null; testCase: { id: string; title: string; capability: string | null; category: string | null } }
+interface StepLogEntry { index: number; action: string; target: string; status: "PENDING" | "RUNNING" | "PASSED" | "FAILED"; durationMs?: number; error?: string; matchedBy?: string; loose?: boolean }
+interface PlanItem { testCaseId: string; status: string; errorMessage: string | null; durationMs: number | null; stepLog?: StepLogEntry[] | null; testCase: { id: string; title: string; capability: string | null; category: string | null } }
 interface PlanSummary {
   id: string; status: string; trigger: string; branch: string; commitSha: string | null; environmentUrl: string;
   project?: { id: string; name: string; defaultBranch: string };
@@ -20,6 +25,29 @@ interface PlanDetail extends PlanSummary {
   artifacts: Array<{ id: string; kind: string; testCaseId: string | null; url: string }>;
 }
 interface EnvironmentDto { id: string; name: string; url: string; isDefault: boolean }
+
+/** Live step-by-step progress of one test; fed by the worker's per-step writes. */
+const plain = (text: string) => text.replace(/\u001b\[[0-9;]*m/g, "").replace(/\[\d+m/g, "");
+
+function StepLog({ steps }: { steps: StepLogEntry[] }) {
+  return (
+    <ol className="run-steps">
+      {steps.map((step) => (
+        <li key={step.index} className={`run-step-row ${step.status.toLowerCase()}`}>
+          <span className="run-step-mark" aria-hidden="true">
+            {step.status === "PASSED" ? <Check size={12} /> : step.status === "FAILED" ? <X size={12} /> : step.status === "RUNNING" ? <span className="run-step-spin" /> : <span className="run-step-dot" />}
+          </span>
+          <span className="run-step-text">
+            <span><b>{step.action}</b> {step.target}</span>
+            {step.matchedBy && <small className={step.loose ? "loose" : undefined}>{step.loose ? "loose match · " : "found by "}{step.matchedBy}</small>}
+            {step.error && <small className="error-text">{plain(step.error)}</small>}
+          </span>
+          <span className="run-step-time">{step.status === "RUNNING" ? "running…" : step.durationMs != null ? `${(step.durationMs / 1000).toFixed(1)}s` : ""}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
 
 function ArtifactViewer({ artifact, onClose }: { artifact: { kind: string; url: string }; onClose: () => void }) {
   const [state, setState] = useState<{ loading: boolean; objectUrl?: string; text?: string; error?: string; name: string }>({ loading: true, name: artifact.kind === "SCREENSHOT" ? "failure-screenshot.png" : "steps.json" });
@@ -61,11 +89,11 @@ function ArtifactViewer({ artifact, onClose }: { artifact: { kind: string; url: 
       <div className="modal artifact-viewer" onClick={(event) => event.stopPropagation()}>
         <header className="artifact-head">
           <div>
-            <p className="eyebrow">{artifact.kind === "SCREENSHOT" ? "FAILURE SCREENSHOT" : "STEP LOG"}</p>
-            <h2>{state.name}</h2>
+            <h2 className="mono" style={{ fontSize: 13 }}>{state.name}</h2>
+            <p className="meta">{artifact.kind === "SCREENSHOT" ? "failure screenshot" : "step log"}</p>
           </div>
           <div className="artifact-actions">
-            <button className="secondary-button" onClick={download} disabled={state.loading || Boolean(state.error)}>Download</button>
+            <button className="secondary-button" onClick={download} disabled={state.loading || Boolean(state.error)}><Download size={14} />Download</button>
             <button className="icon-button" aria-label="Close" onClick={onClose}><X size={16} /></button>
           </div>
         </header>
@@ -81,6 +109,8 @@ function ArtifactViewer({ artifact, onClose }: { artifact: { kind: string; url: 
 }
 
 export default function ExecutionsPage() {
+  const me = useMe();
+  const canRun = can(me, PERMISSIONS.EXECUTIONS_RUN);
   const { projects, selected } = useProjects();
   const { toast, notify } = useToast();
   const [plans, setPlans] = useState<PlanSummary[] | null>(null);
@@ -90,6 +120,10 @@ export default function ExecutionsPage() {
   const [projectFilter, setProjectFilter] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [artifactView, setArtifactView] = useState<{ kind: string; url: string } | null>(null);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [openSteps, setOpenSteps] = useState<Record<string, boolean>>({});
+  const inspectorRef = useRef<HTMLElement | null>(null);
+  useFitViewport(inspectorRef);
 
   const reload = useCallback(async () => {
     try {
@@ -103,9 +137,23 @@ export default function ExecutionsPage() {
     } catch (error) {
       notify(error instanceof Error ? error.message : "Unable to load executions", "error");
     }
-  }, [projectFilter, notify]);
+  }, [projectFilter, selected?.id, notify]);
 
   useEffect(() => { void reload(); const timer = window.setInterval(() => { void reload(); }, 5000); return () => window.clearInterval(timer); }, [reload]);
+
+  // The list polls every 5s, but the open run needs step-level progress: refresh it every 2s while it is live.
+  const liveDetailId = detail && ["QUEUED", "RUNNING"].includes(detail.status) ? detail.id : null;
+  useEffect(() => {
+    if (!liveDetailId) return;
+    const timer = window.setInterval(() => {
+      const projectId = plans?.find((plan) => plan.id === liveDetailId)?.project?.id ?? selected?.id;
+      if (!projectId) return;
+      api<PlanDetail>(`/v1/projects/${projectId}/executions/${liveDetailId}`)
+        .then((next) => setDetail((current) => (current?.id === next.id ? next : current)))
+        .catch(() => undefined);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [liveDetailId, plans, selected?.id]);
 
   async function act(label: string, fn: () => Promise<unknown>, success: string) {
     setBusy(label);
@@ -116,7 +164,7 @@ export default function ExecutionsPage() {
 
   function runAll() {
     const project = projectFilter || selected?.id;
-    if (!project) return;
+    if (!project || requireSubscription(me)) return;
     void act("runall", () => api(`/v1/projects/${project}/executions/run-all`, { method: "POST", body: environmentId ? { environmentId } : {} }), "Approved suite queued.");
   }
 
@@ -132,84 +180,114 @@ export default function ExecutionsPage() {
     }
   };
 
+  // Deep link from a GitHub check / commit status or the CI page: /executions?plan=<id>&project=<id>.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const planId = params.get("plan");
+    const projectId = params.get("project");
+    if (!planId || !projectId) return;
+    api<PlanDetail>(`/v1/projects/${projectId}/executions/${planId}`).then(setDetail).catch(() => notify("That run is not available in this organization", "error"));
+    window.history.replaceState({}, "", "/executions");
+  }, [notify]);
+
+  const tally = (statuses: string[]) => plans?.filter((plan) => statuses.includes(plan.status)).length ?? 0;
+  const filterGroups: Record<string, string[]> = { PASSED: ["PASSED", "COMPLETED"], CANCELED: ["CANCELED", "BLOCKED"] };
+  const visiblePlans = (plans ?? []).filter((plan) => !statusFilter || (filterGroups[statusFilter] ?? [statusFilter]).includes(plan.status));
+
   return (
     <AppShell activePath="/executions">
       <header className="page-header">
         <div>
-          <p className="eyebrow">EXECUTION HISTORY</p>
           <h1>Executions</h1>
           <p className="muted">{selected ? `${selected.name} · immutable plans with per-test results and artifacts` : "Select a project to inspect its runs."}</p>
         </div>
         <div className="heading-actions">
-          <select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} aria-label="Project filter">
-            <option value="">All projects</option>
-            {(projects ?? []).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-          </select>
-          <select value={environmentId} onChange={(event) => setEnvironmentId(event.target.value)} aria-label="Environment">
-            {environments.length === 0 && <option value="">No environments configured</option>}
-            {environments.map((environment) => <option key={environment.id} value={environment.id}>{environment.name}{environment.isDefault ? " (default)" : ""}</option>)}
-          </select>
-          <button className="primary-button" onClick={runAll} disabled={!selected || busy !== null || plans?.length === undefined}><PlayCircle size={17} />Run all approved</button>
-          <button className="icon-button" aria-label="Refresh" onClick={() => reload()}><RefreshCw size={16} /></button>
+          <Select className="w-wide" value={projectFilter} onChange={setProjectFilter} ariaLabel="Project filter" options={[{ value: "", label: "All projects" }, ...(projects ?? []).map((project) => ({ value: project.id, label: project.name }))]} />
+          <Select className="w-wide" value={environmentId} onChange={setEnvironmentId} ariaLabel="Environment" placeholder="No environments configured" disabled={environments.length === 0} options={environments.map((environment) => ({ value: environment.id, label: environment.name, hint: environment.isDefault ? "default" : undefined }))} />
+          <button className="icon-button" style={{ width: 32, height: 32 }} aria-label="Refresh" title="Refresh (auto every 5s)" onClick={() => reload()}><RefreshCw size={14} /></button>
+          {canRun && <button className="run-button" onClick={runAll} disabled={!selected || busy !== null || plans?.length === undefined}><PlayCircle size={14} />Run all approved</button>}
         </div>
       </header>
 
-      {!plans ? <section className="loading-state">Loading executions…</section>
-        : plans.length === 0 ? <section className="empty-state"><h2>No executions yet</h2><p>Runs you start from the Test Cases page or CI appear here across all projects.</p></section>
-        : <section className="plans">
-          {plans.map((plan) => {
-            const pct = plan.counts.total ? Math.round(((plan.counts.passed + plan.counts.failed) / plan.counts.total) * 100) : 0;
-            return (
-              <article className="plan-card" key={plan.id}>
-                <div className="plan-main">
-                  <div className="plan-id"><span className={`status ${statusClass(plan.status)}`}>{statusLabels[plan.status] ?? plan.status}</span><strong>{fmtRelative(plan.createdAt)}</strong><small><span className="plan-project">{plan.project?.name ?? ""}</span> · {plan.trigger.toLowerCase()} · {plan.branch}{plan.commitSha ? <> · <code>{shortSha(plan.commitSha)}</code></> : null}</small></div>
-                  <div className="plan-progress"><div className="progress"><span className={plan.counts.failed ? "has-failures" : ""} style={{ width: `${pct}%` }} /></div><small>{plan.counts.passed} passed · {plan.counts.failed} failed · {plan.counts.running + plan.counts.queued} pending of {plan.counts.total}</small></div>
-                </div>
-                <div className="plan-actions">
-                  <button className="secondary-button" onClick={() => openDetail(plan.id)}>Details <ChevronDown size={14} /></button>
-                  {(plan.status === "FAILED" || plan.counts.failed > 0) && <button className="secondary-button" onClick={() => act(`rerun-${plan.id}`, () => api(`/v1/projects/${detailProjectId(plan.id)}/executions/${plan.id}/rerun-failed`, { method: "POST" }), "Failed tests re-queued.")} disabled={busy !== null}><RefreshCw size={14} />Rerun failed</button>}
-                  {(plan.status === "QUEUED" || plan.status === "RUNNING") && <button className="mini-button danger" onClick={() => act(`cancel-${plan.id}`, () => api(`/v1/projects/${detailProjectId(plan.id)}/executions/${plan.id}/cancel`, { method: "PATCH" }), "Execution canceled.")} disabled={busy !== null}><Ban size={13} />Cancel</button>}
-                </div>
-              </article>
-            );
-          })}
-        </section>}
-
-      {detail && (
-        <div className="modal-backdrop" role="dialog" aria-modal="true">
-          <div className="modal wide">
-            <header><div><p className="eyebrow">{statusLabels[detail.status]} · {detail.trigger}</p><h2>Run from {fmtRelative(detail.createdAt)}</h2></div><button className="icon-button" aria-label="Close" onClick={() => setDetail(null)}><X size={16} /></button></header>
-            <div className="modal-body">
-              <p className="muted"><code>{shortSha(detail.commitSha)}</code> · {detail.branch} · {detail.environmentUrl}</p>
-              <div className="detail-items">
-                {detail.items.map((item) => (
-                  <div className={`detail-item ${statusClass(item.status)}`} key={item.testCaseId}>
-                    <span className={`status ${statusClass(item.status)}`}>{statusLabels[item.status] ?? item.status}</span>
-                    <div className="detail-item-copy">
-                      <strong>{item.testCase.title}</strong>
-                      {item.errorMessage && <small className="error-text">{item.errorMessage}</small>}
-                      {item.durationMs != null && <small>{(item.durationMs / 1000).toFixed(1)}s</small>}
-                    </div>
-                    <span className="artifact-links">
-                      {detail.artifacts.filter((artifact) => artifact.testCaseId === item.testCaseId).map((artifact) => (
-                        <button key={artifact.id} className="artifact-link" title={`Open ${artifact.kind.toLowerCase()}`} onClick={() => setArtifactView({ kind: artifact.kind, url: artifact.url })}>{artifact.kind === "SCREENSHOT" ? "Screenshot" : "Log"}</button>
-                      ))}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-            <footer>
-              {(detail.status === "FAILED" || detail.counts.failed > 0) && <button className="secondary-button" onClick={() => act("rerun-detail", () => api(`/v1/projects/${selected!.id}/executions/${detail.id}/rerun-failed`, { method: "POST" }), "Failed tests re-queued.")} disabled={busy !== null}><RefreshCw size={14} />Rerun failed</button>}
-              <button className="primary-button" onClick={() => setDetail(null)}>Close</button>
-            </footer>
-          </div>
-        </div>
+      {plans && plans.length > 0 && (
+        <nav className="lifecycle-tabs" aria-label="Filter runs by status">
+          {([["", "All runs", "", plans.length], ["RUNNING", "Running", "running", tally(["RUNNING"])], ["QUEUED", "Queued", "pending-review", tally(["QUEUED"])], ["FAILED", "Failed", "rejected", tally(["FAILED"])], ["PASSED", "Passed", "approved", tally(["PASSED", "COMPLETED"])], ["CANCELED", "Canceled", "archived", tally(["CANCELED", "BLOCKED"])]] as const).map(([key, label, tone, count]) => (
+            <button type="button" key={label} aria-pressed={statusFilter === key} onClick={() => setStatusFilter(statusFilter === key ? "" : key)}><span><i className={tone ? `t-${tone}` : undefined} />{label}</span><strong>{count}</strong></button>
+          ))}
+        </nav>
       )}
+
+      {!plans ? <section className="plans" aria-busy="true" aria-label="Loading executions">{Array.from({ length: 6 }, (_, i) => <div className="plan-card" key={i} style={{ cursor: "default" }}><span className="skel" style={{ width: 70, height: 18, borderRadius: 999 }} /><span style={{ display: "grid", gap: 6 }}><span className="skel" style={{ width: "60%", height: 11 }} /><span className="skel" style={{ width: "40%", height: 9 }} /></span><span className="skel" style={{ width: "70%", height: 10 }} /><span className="skel" style={{ width: "90%", height: 6 }} /><span /></div>)}</section>
+        : plans.length === 0 ? <section className="empty-state"><h2>No executions yet</h2><p>Runs started from the test library, the overview, or a CI push appear here across all projects, each pinned to the commit it ran against.</p></section>
+        : <div className={detail ? "library-frame inspecting" : "library-frame"}>
+          <section className="plans">
+            <div className="plans-head"><span>status</span><span>run</span><span>ref</span><span>results</span><span /></div>
+            {visiblePlans.length === 0 && <div className="empty-inline">No runs with this status.</div>}
+            {visiblePlans.map((plan) => {
+              const pending = plan.counts.running + plan.counts.queued;
+              return (
+                <article className={`plan-card${detail?.id === plan.id ? " selected" : ""}`} key={plan.id} onClick={() => openDetail(plan.id)} tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter") void openDetail(plan.id); }} aria-label={`Run ${fmtRelative(plan.createdAt)}, ${statusLabels[plan.status] ?? plan.status}`}>
+                  <span className={`status ${statusClass(plan.status)}`}>{statusLabels[plan.status] ?? plan.status}</span>
+                  <div className="plan-id"><strong>{plan.project?.name ?? "Run"}</strong><small>{plan.trigger.toLowerCase()} · {fmtRelative(plan.createdAt)}</small></div>
+                  <div className="plan-ref"><b>{plan.branch}</b><span>{plan.commitSha ? `@ ${shortSha(plan.commitSha)}` : "no commit"}</span></div>
+                  <div className="plan-progress"><SegBar passed={plan.counts.passed} failed={plan.counts.failed} running={pending} total={plan.counts.total} /><small>{plan.counts.passed} passed · {plan.counts.failed} failed{pending ? ` · ${pending} pending` : ""} / {plan.counts.total}</small></div>
+                  <div className="plan-actions" onClick={(event) => event.stopPropagation()}>
+                    {canRun && (plan.status === "FAILED" || plan.counts.failed > 0) && <button className="mini-button" onClick={() => act(`rerun-${plan.id}`, () => api(`/v1/projects/${detailProjectId(plan.id)}/executions/${plan.id}/rerun-failed`, { method: "POST" }), "Failed tests re-queued.")} disabled={busy !== null}><RefreshCw size={12} />Rerun failed</button>}
+                    {canRun && (plan.status === "QUEUED" || plan.status === "RUNNING") && <button className="mini-button danger" onClick={() => act(`cancel-${plan.id}`, () => api(`/v1/projects/${detailProjectId(plan.id)}/executions/${plan.id}/cancel`, { method: "PATCH" }), "Execution canceled.")} disabled={busy !== null}><Ban size={12} />Cancel</button>}
+                  </div>
+                </article>
+              );
+            })}
+          </section>
+
+          {detail && (
+            <aside className="inspector" aria-label="Run details" ref={inspectorRef}>
+              <header className="inspector-head">
+                <div className="inspector-top">
+                  <span className={`status ${statusClass(detail.status)}`}>{statusLabels[detail.status] ?? detail.status}</span>
+                  <span className="meta">{detail.trigger.toLowerCase()}</span>
+                  <button className="icon-button" aria-label="Close run details" onClick={() => setDetail(null)}><X size={14} /></button>
+                </div>
+                <h2>Run from {fmtRelative(detail.createdAt)}</h2>
+                <p className="meta"><strong>{detail.branch}</strong>@ {shortSha(detail.commitSha)}<span className="dot">·</span>{detail.environmentUrl}</p>
+                <SegBar passed={detail.counts.passed} failed={detail.counts.failed} running={detail.counts.running + detail.counts.queued} total={detail.counts.total} />
+              </header>
+              <div className="inspector-body">
+                <div className="detail-items">
+                  {detail.items.length === 0 && <div className="empty-inline">This plan has no test items.</div>}
+                  {detail.items.map((item) => (
+                    <div className={`detail-item ${statusClass(item.status)}`} key={item.testCaseId}>
+                      <span className={`status ${statusClass(item.status)}`}>{statusLabels[item.status] ?? item.status}</span>
+                      <div className="detail-item-copy">
+                        <strong>{item.testCase.title}</strong>
+                        {item.errorMessage && <small className="error-text">{plain(item.errorMessage)}</small>}
+                        {item.durationMs != null && <small>{(item.durationMs / 1000).toFixed(1)}s</small>}
+                        {item.status === "RUNNING" && item.stepLog?.length ? <small>step {Math.min(item.stepLog.filter((step) => step.status === "PASSED").length + 1, item.stepLog.length)} of {item.stepLog.length}</small> : null}
+                      </div>
+                      <span className="artifact-links">
+                        {item.stepLog?.length ? (() => {
+                          const open = openSteps[item.testCaseId] ?? (item.status === "RUNNING" || item.status === "FAILED");
+                          return <button className="artifact-link" aria-expanded={open} onClick={() => setOpenSteps({ ...openSteps, [item.testCaseId]: !open })}>{open ? "hide steps" : `${item.stepLog.length} steps`}</button>;
+                        })() : null}
+                        {detail.artifacts.filter((artifact) => artifact.testCaseId === item.testCaseId).map((artifact) => (
+                          <button key={artifact.id} className="artifact-link" title={`Open ${artifact.kind.toLowerCase()}`} onClick={() => setArtifactView({ kind: artifact.kind, url: artifact.url })}>{artifact.kind === "SCREENSHOT" ? "screenshot" : "log"}</button>
+                        ))}
+                      </span>
+                      {item.stepLog?.length && (openSteps[item.testCaseId] ?? (item.status === "RUNNING" || item.status === "FAILED")) ? <StepLog steps={item.stepLog} /> : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {canRun && (detail.status === "FAILED" || detail.counts.failed > 0) && <footer className="inspector-foot">
+                <button className="secondary-button" onClick={() => act("rerun-detail", () => api(`/v1/projects/${detailProjectId(detail.id)}/executions/${detail.id}/rerun-failed`, { method: "POST" }), "Failed tests re-queued.")} disabled={busy !== null}><RefreshCw size={13} />Rerun failed</button>
+              </footer>}
+            </aside>
+          )}
+        </div>}
 
       {artifactView && <ArtifactViewer artifact={artifactView} onClose={() => setArtifactView(null)} />}
 
-      {toast && <div className={`toast ${toast.tone}`}>{toast.tone === "success" ? <Check size={17} /> : toast.tone === "error" ? <X size={17} /> : <CircleHelp size={17} />}{toast.message}</div>}
+      {toast && <div className={`toast ${toast.tone}`} role="status">{toast.tone === "success" ? <Check size={16} /> : toast.tone === "error" ? <X size={16} /> : <CircleHelp size={16} />}{toast.message}</div>}
     </AppShell>
   );
 }

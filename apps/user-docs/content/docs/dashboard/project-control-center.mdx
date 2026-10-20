@@ -1,0 +1,24 @@
+---
+title: Project Control Center
+description: The Overview page — one project's analysis, review queue, and latest run.
+---
+
+**Overview** is the page you land on. It summarizes the project selected in the sidebar's project switcher; the choice is remembered between sessions.
+
+## Lifecycle strip
+
+| Stage | Shows | Action |
+| --- | --- | --- |
+| **Analysis** | The commit the latest analysis covers. | **Analyze** |
+| **Generated** | Number of tests, and the mode and time of the last generation. | **Regenerate** (arrow: Incremental / Full) |
+| **Review** | Tests waiting for a decision. | **Open review queue** |
+| **Approved** | Tests that can run. Only approved versions execute, here or in CI. | **Run approved** |
+| **Last run** | Pass rate, branch, commit, and time. | **All executions** |
+
+## Panels
+
+- **Waiting for review** — pending tests with the AI's **confidence**. Confidence is the model's own score; it is not a measure of correctness.
+- **Recent runs** — status, trigger (dashboard, CI, rerun), branch, and a pass/fail bar. Full history is under **Executions**.
+- **Plan** — tokens used and remaining, run slots, and renewal date. The same numbers appear as **N slots** and **AI N%** chips in the top bar.
+
+A billing problem shows a banner here; see [Billing statuses](/docs/billing/billing-statuses).

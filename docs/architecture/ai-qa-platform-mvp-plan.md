@@ -18,7 +18,7 @@ Build a multi-tenant SaaS as a TypeScript modular monolith for the control plane
 - Artifact storage: S3-compatible object storage.
 - Workers: ephemeral, resource-limited containers.
 - Browser automation: Playwright.
-- Billing: Stripe Billing, Checkout, Customer Portal, and webhooks.
+- Billing: Stripe Billing, Checkout (subscribe and card update), and webhooks. Invoices, payment method and plan changes are in-app; no Customer Portal.
 - AI: provider-independent `ModelProvider` abstraction.
 
 ## Repository Layout
@@ -165,7 +165,17 @@ Use one primary model and one fallback model/provider initially. Build the abstr
 
 ## Repository Analysis and Test Generation
 
-Repository connectors support GitHub and Bitbucket. CI integration supports GitHub Actions, GitLab CI, and Bitbucket Pipelines.
+Repository connectors support GitHub, GitLab, and Bitbucket. CI integration supports GitHub Actions, GitLab CI, and Bitbucket Pipelines.
+
+### Repository Connector Authentication (per-organization OAuth)
+
+Each organization connects repositories through **its own OAuth application per provider** — the platform holds no shared client credentials.
+
+- An organization admin registers the org's OAuth app at the provider (GitHub / GitLab / Bitbucket) and pastes the Client ID and Client Secret into Settings → Connected accounts. Only Admins can save, replace, or remove these credentials, and every change is audit-logged.
+- Client secrets are stored encrypted (AES-256-GCM, key derived from the platform secret) in the `IntegrationCredential` table — one row per organization per provider. Secrets are write-only: no API response ever returns them, and the UI shows only a masked Client ID.
+- The redirect/callback URI is a single fixed URL per provider per deployment (shown in the configuration UI with a copy button). The signed OAuth `state` JWT carries the organization identity, so one callback serves all organizations securely.
+- Connecting an account requires the org's credentials to exist; the authorize, token-exchange, and token-refresh steps all resolve credentials from the organization's `IntegrationCredential` row. If credentials are later removed, existing connections keep working until their access tokens expire, after which they must be reconnected.
+- `IntegrationCredential.provider` is intentionally an open string (not a database enum) so future integrations (JIRA, etc.) reuse the same credentials model, admin UX, and encrypted-storage path without a migration.
 
 Initial analyzer target: React + TypeScript + Vite. Inspect dependencies, routes, components, forms/controls, APIs, state transitions, authentication, and business-logic signals. Combine static AST/dependency analysis with controlled browser discovery.
 
@@ -361,6 +371,7 @@ Applications expose observables such as canvas rendered, model loaded, object se
 - Subscription, BillingEvent, BillingAlert, PricingPlan, PlanQuotaPolicy, PlanExecutionPolicy
 - AIProvider, AIModel, EncryptedProviderCredential, ModelRoutingPolicy, AIUsageReservation, AIUsageRecord, AIUsagePeriod
 - Project, RepositoryConnection, RepositoryRevision, AnalysisJob
+- IntegrationCredential (per-organization OAuth client credentials for repository connectors and future integrations)
 - ApplicationModelVersion, ApplicationEntity, ApplicationRelation, EvidenceArtifact
 - TestSuite, TestCase, TestCaseVersion, TestStep, TestReview
 - TestModule, TestModuleMembership, TestTag, TestTagAssignment

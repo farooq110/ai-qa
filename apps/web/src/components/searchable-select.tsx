@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, Search } from "lucide-react";
+import { useAnchoredMenu } from "@/components/use-anchored-menu";
 
 export interface ComboOption { value: string; label: string; hint?: string }
 
@@ -22,6 +23,10 @@ export function SearchableSelect({ value, onChange, options, placeholder, ariaLa
   const [activeIndex, setActiveIndex] = useState(0);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const close = useCallback(() => setOpen(false), []);
+  useAnchoredMenu(open, triggerRef, menuRef, close);
 
   const selected = options.find((option) => option.value === value);
 
@@ -63,15 +68,15 @@ export function SearchableSelect({ value, onChange, options, placeholder, ariaLa
 
   return (
     <div className={`combo ${open ? "open" : ""}`} ref={rootRef}>
-      <button type="button" className="combo-trigger" onClick={() => !disabled && setOpen((current) => !current)} aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel} disabled={disabled}>
+      <button type="button" ref={triggerRef} className="combo-trigger" onClick={() => !disabled && setOpen((current) => !current)} aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel} disabled={disabled}>
         <span className="combo-value">
-          <strong>{selected?.label ?? placeholder ?? "Select…"}</strong>
+          <strong className={selected ? undefined : "placeholder"}>{selected?.label ?? placeholder ?? "Select…"}</strong>
           {selected?.hint && <small>{selected.hint}</small>}
         </span>
         <ChevronDown size={14} />
       </button>
       {open && (
-        <div className="combo-menu" role="listbox">
+        <div className="combo-menu" role="listbox" ref={menuRef}>
           <label className="combo-search">
             <Search size={13} />
             <input ref={inputRef} value={query} onChange={(event) => { setQuery(event.target.value); setActiveIndex(0); }} onKeyDown={onKeyDown} placeholder="Search…" />

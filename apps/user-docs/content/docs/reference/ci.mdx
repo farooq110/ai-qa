@@ -1,0 +1,63 @@
+---
+title: CI Reference
+description: Events per provider, how runs are de-duplicated and superseded, and what is reported back.
+---
+
+For setup see [Setting up CI](/docs/ci-cd/setting-up-ci). This page is the exact behavior.
+
+## Events that start a run
+
+| Provider | Mode | Event | Ignored |
+| --- | --- | --- | --- |
+| GitHub | The deployed URL | `deployment_status` with state `success`. URL is the deployment's `environment_url`, falling back to `target_url`. | Non-success states. |
+| GitHub | A saved environment | `workflow_run` completed with conclusion `success`, and a workflow name matching **Deploy workflow**. | Workflows triggered by pull requests. |
+| GitLab | The deployed URL | `deployment` with success; URL from the environment's external URL. | — |
+| GitLab | A saved environment | `pipeline` success on a selected branch. | Tag, merge-request, and child pipelines. |
+| Bitbucket | A saved environment | Commit status `SUCCESSFUL` for a Pipelines build. | Statuses whose key starts with `proofline`. |
+
+Installation removal on GitHub disconnects the account.
+
+## Authentication of webhooks
+
+| Provider | Verified with |
+| --- | --- |
+| GitHub | `X-Hub-Signature-256` HMAC-SHA256 of the raw body, compared in constant time. |
+| GitLab | `X-Gitlab-Token` equal to a per-project secret. |
+| Bitbucket | `X-Hub-Signature` HMAC with a per-project secret. |
+
+Per-project secrets are random, stored encrypted, and registered on the repository when CI is turned on (GitLab and Bitbucket). GitHub uses the App's webhook.
+
+## Branch rules
+
+- Up to **20** rules. A rule is `[A-Za-z0-9_./*@+-]` up to 100 characters; `*` is a wildcard and matching is case-insensitive.
+- In *A saved environment* mode each rule maps to an environment.
+- *Deployment environment* filters by name, only in *The deployed URL* mode.
+- **PR previews** (deployed URL, GitHub and GitLab) test deployments of any branch with an open pull or merge request.
+
+## Idempotency and ordering
+
+- Each delivery has a key (`deployment_status:<id>`, `workflow_run:<id>:<attempt>`, `pipeline:<id>`, …). A **redelivered** webhook is a no-op.
+- A newer commit on the same branch **cancels** older queued or running runs (*Superseded by `<sha>`*).
+- CI runs wait for a free concurrent-run slot and are never dropped for lack of one.
+
+## Access headers
+
+Up to **5** headers per project, for deployments behind an access wall. Names are letters, digits, and `-` (up to 64); values are up to 512 characters. `Host`, `Content-Length`, `Content-Type`, `Connection`, `Transfer-Encoding`, `Upgrade`, `Cookie`, and `Set-Cookie` can't be set.
+
+- Values are encrypted at rest and are never returned by the API; a header saved with no new value keeps its stored value.
+- A header is added only to requests whose origin equals the run's target URL. Other origins, including third-party scripts and fonts, receive nothing. Applies to dashboard runs as well as CI runs.
+- A cross-origin redirect from a `GET` or `HEAD` request is handed to the browser without the header. A same-origin redirect chain that later leaves the site, or a non-`GET` request that redirects to another site, can still pass it to that hop.
+
+## Reporting
+
+| Provider | Object | Name |
+| --- | --- | --- |
+| GitHub | Check run: queued → in progress → success / failure / cancelled / neutral | `Proofline · <project>` |
+| GitLab | Commit status (skipped is reported as success) | `Proofline · <project>` |
+| Bitbucket | Build status | key `proofline-<projectId>` |
+
+Descriptions are capped at 140 characters. Reporting reads the current run state, so a retried or reordered update is harmless; failed updates are retried three times with exponential backoff starting at 5 seconds. ProoflineQA does not comment on pull requests.
+
+## Skipped runs
+
+*No approved tests*, *deployment did not include a URL*, *no environment mapped*, and *billing is …* record the run as skipped and report neutral (GitHub) or success with the reason (GitLab, Bitbucket), so a required check never blocks a merge for ProoflineQA's own reasons. See [Results and checks](/docs/ci-cd/results-and-checks).

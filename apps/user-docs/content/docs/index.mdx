@@ -1,0 +1,44 @@
+---
+title: Quickstart
+description: From sign-up to your first approved test run, and then to CI on every deploy.
+---
+
+ProoflineQA drafts browser tests from your repository with AI, holds every draft for human review, and **runs only the tests your team approved** — on demand, or on every deploy. This page takes you from zero to a first run.
+
+New to the model? Read [Concepts](/docs/concepts) afterwards.
+
+<Steps>
+  <Step>
+    **Create your organization and start a plan.** Sign up, confirm your email, and pick a plan. See [Create an account](/docs/getting-started/create-an-account).
+  </Step>
+  <Step>
+    **Connect your Git provider.** In **Settings → Repository providers**, connect GitHub, Bitbucket, or GitLab. See [Repository providers](/docs/settings/repository-providers). Admins only.
+  </Step>
+  <Step>
+    **Import a repository.** **Projects → Import repository**. For a monorepo, set a root directory. See [Importing a repository](/docs/projects/connecting-a-repository).
+  </Step>
+  <Step>
+    **Add an environment.** A deployed URL the tests run against, with optional login credentials. See [Environments](/docs/settings/environments).
+  </Step>
+  <Step>
+    **Analyze, then generate.** **Analyze** maps your routes and components; **Generate tests** drafts candidates. See [Analysis and generation](/docs/dashboard/analyzing-your-repository).
+  </Step>
+  <Step>
+    **Review and approve.** Approve, reject, or edit each draft. See [Reviewing AI tests](/docs/test-cases/reviewing-ai-tests).
+  </Step>
+  <Step>
+    **Run.** Start a run and read the evidence. See [Running tests](/docs/executions/running-tests).
+  </Step>
+  <Step>
+    **Automate.** Run the approved suite on every deploy and report back on the commit. See [How CI works](/docs/ci-cd/how-ci-works).
+  </Step>
+</Steps>
+
+## Where to go next
+
+<Cards>
+  <Card title="Concepts" href="/docs/concepts" description="Lifecycle, versions, runs, environments, and supported stacks." />
+  <Card title="Test steps reference" href="/docs/reference/test-steps" description="Every action, how targets resolve, timeouts, and variables." />
+  <Card title="CI reference" href="/docs/reference/ci" description="Events per provider, statuses, retries, and idempotency." />
+  <Card title="Security and data handling" href="/docs/security" description="What is read, what is sent to the model, what is stored." />
+</Cards>

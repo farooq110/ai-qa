@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  Activity, Bot, Boxes, Building2, CircleAlert, Cpu, KeyRound, Layers3, LogIn, RefreshCw, Shield
+  Activity, Bot, Boxes, Building2, CircleAlert, Cpu, KeyRound, Layers3, LifeBuoy, LogIn, RefreshCw, Shield
 } from "lucide-react";
 
 const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
@@ -10,13 +10,15 @@ const tokenKey = "proofline.adminToken";
 
 interface Overview { organizations: number; users: number; projects: number; testCases: number; activeExecutions: number; aiTokensThisMonth: number; billingAttention: Array<{ status: string; count: number }> }
 interface OrgRow { id: string; name: string; industry: string | null; createdAt: string; members: number; projects: number; subscriptionStatus: string; plan: string | null }
-interface PlanRow { id: string; key: string; name: string; monthlyPriceUsd: number; tokenQuotaMonthly: number; executionSlotLimit: number; retentionDays: number; isActive: boolean; _count: { subscriptions: number } }
+interface PlanRow { id: string; key: string; name: string; monthlyPriceUsd: number; tokenQuotaMonthly: number; warningThresholdPct: number; executionSlotLimit: number; retentionDays: number; projectLimit: number; trialDays: number; isActive: boolean; _count: { subscriptions: number } }
 interface WorkersInfo { queuedExecutions: number; runningExecutions: number; aiCalls24h: number; configuredWorkerConcurrency: number }
 interface AuditRow { id: string; action: string; actorEmail: string | null; organizationId: string | null; targetType: string | null; targetId: string | null; metadata: Record<string, unknown> | null; createdAt: string }
+interface SupportQueryRow { id: string; title: string; description: string; email: string; imageUrl: string | null; status: string; createdAt: string }
 
-type Section = "overview" | "organizations" | "plans" | "workers" | "audit";
+type Section = "overview" | "organizations" | "plans" | "workers" | "audit" | "support";
 
-const statusTone = (status: string) => ["ACTIVE", "TRIALING"].includes(status) ? "ok" : ["PAST_DUE", "PAYMENT_WARNING"].includes(status) ? "warn" : "bad";
+const statusTone = (status: string) => ["ACTIVE", "TRIALING", "RESOLVED"].includes(status) ? "ok" : ["PAST_DUE", "PAYMENT_WARNING", "OPEN"].includes(status) ? "warn" : "bad";
+const supportStatuses = ["OPEN", "RESOLVED", "REJECTED"];
 
 export default function AdminPage() {
   const [token, setToken] = useState<string | null>(null);
@@ -29,6 +31,7 @@ export default function AdminPage() {
   const [plans, setPlans] = useState<PlanRow[] | null>(null);
   const [workers, setWorkers] = useState<WorkersInfo | null>(null);
   const [audit, setAudit] = useState<AuditRow[] | null>(null);
+  const [supportQueries, setSupportQueries] = useState<SupportQueryRow[] | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -48,6 +51,7 @@ export default function AdminPage() {
       if (target === "plans") setPlans(await get<PlanRow[]>("/v1/admin/plans", token));
       if (target === "workers") setWorkers(await get<WorkersInfo>("/v1/admin/workers", token));
       if (target === "audit") setAudit(await get<AuditRow[]>("/v1/admin/audit?take=60", token));
+      if (target === "support") setSupportQueries(await get<SupportQueryRow[]>("/v1/admin/support-queries", token));
     } catch (cause) {
       show(cause instanceof Error ? cause.message : "Request failed");
     } finally {
@@ -87,6 +91,16 @@ export default function AdminPage() {
     }
   }
 
+  async function setSupportQueryStatus(query: SupportQueryRow, status: string) {
+    try {
+      await patch(`/v1/admin/support-queries/${query.id}`, { status }, token!);
+      show(`"${query.title}" marked ${status.toLowerCase()}.`);
+      await load("support");
+    } catch (cause) {
+      show(cause instanceof Error ? cause.message : "Update failed");
+    }
+  }
+
   if (!token) {
     return (
       <main className="admin-login">
@@ -109,7 +123,8 @@ export default function AdminPage() {
     [Building2, "Organizations", "organizations"],
     [Boxes, "Plans & quotas", "plans"],
     [Cpu, "Workers & queue", "workers"],
-    [KeyRound, "Audit log", "audit"]
+    [KeyRound, "Audit log", "audit"],
+    [LifeBuoy, "Support queries", "support"]
   ] as const;
 
   return (
@@ -181,21 +196,14 @@ export default function AdminPage() {
         {section === "plans" && plans && (
           <div className="grid single">
             <section className="panel">
-              <div className="title"><div><p>PRICING</p><h2>Plans &amp; entitlements</h2></div></div>
+              <div className="title"><div><p>PRICING</p><h2>Plans &amp; entitlements</h2></div><button className="admin-refresh" onClick={async () => setPlans(await get<PlanRow[]>("/v1/admin/plans", token))}><RefreshCw size={14} />Reload</button></div>
               <div className="admin-table">
-                <div className="admin-tr head"><span>Plan</span><span>Price</span><span>Token quota</span><span>Execution slots</span><span>Retention</span><span>Subscriptions</span></div>
+                <div className="admin-tr head"><span>Plan</span><span>Price $/mo</span><span>Token quota</span><span>Warning %</span><span>Slots</span><span>Projects</span><span>Retention d</span><span>Trial d</span><span>Active</span><span>Subs</span><span></span></div>
                 {plans.map((plan) => (
-                  <div className="admin-tr" key={plan.id}>
-                    <span><strong>{plan.name}</strong><small>{plan.key}</small></span>
-                    <span>${plan.monthlyPriceUsd}/mo</span>
-                    <span>{plan.tokenQuotaMonthly.toLocaleString()}</span>
-                    <span>{plan.executionSlotLimit}</span>
-                    <span>{plan.retentionDays} days</span>
-                    <span>{plan._count.subscriptions}</span>
-                  </div>
+                  <PlanEditor key={plan.id} plan={plan} token={token} onSaved={async () => { setPlans(await get<PlanRow[]>("/v1/admin/plans", token)); show(`Plan "${plan.name}" saved — enforcement is immediate.`); }} onError={show} />
                 ))}
               </div>
-              <small>Plan configuration drives server-side enforcement: AI quota reserves, execution concurrency, and artifact retention.</small>
+              <small>Changes apply server-side immediately: token quota gates AI generation, execution slots gate concurrency, project limit gates project creation, retention drives artifact cleanup. Every change is recorded in the audit trail.</small>
             </section>
           </div>
         )}
@@ -237,6 +245,32 @@ export default function AdminPage() {
             </section>
           </div>
         )}
+
+        {section === "support" && supportQueries && (
+          <div className="grid single">
+            <section className="panel">
+              <div className="title"><div><p>CONTACT MODAL</p><h2>{supportQueries.length} support queries</h2></div></div>
+              <div className="admin-table">
+                <div className="admin-tr head"><span>Query</span><span>From</span><span>Attachment</span><span>Received</span><span>Status</span><span>Set status</span></div>
+                {supportQueries.map((query) => (
+                  <div className="admin-tr" key={query.id}>
+                    <span><strong>{query.title}</strong><small>{query.description}</small></span>
+                    <span><small>{query.email}</small></span>
+                    <span>{query.imageUrl ? <a href={query.imageUrl} target="_blank" rel="noreferrer">View image</a> : <small>—</small>}</span>
+                    <span><small>{new Date(query.createdAt).toLocaleString()}</small></span>
+                    <span><b className={`pill ${statusTone(query.status)}`}>{query.status}</b></span>
+                    <span>
+                      <select value={query.status} aria-label={`Status for ${query.title}`} onChange={(event) => setSupportQueryStatus(query, event.target.value)}>
+                        {supportStatuses.map((status) => <option key={status} value={status}>{status}</option>)}
+                      </select>
+                    </span>
+                  </div>
+                ))}
+                {supportQueries.length === 0 && <div className="admin-tr"><span><small>No support queries yet.</small></span></div>}
+              </div>
+            </section>
+          </div>
+        )}
       </section>
       {notice && <div className="notice">{notice}</div>}
     </main>
@@ -260,4 +294,65 @@ async function patch(path: string, body: unknown, token: string) {
 
 function Card({ label, value, detail, icon: Icon }: { label: string; value: string; detail: string; icon: typeof Activity }) {
   return <article className="card"><Icon size={19} /><p>{label}</p><strong>{value}</strong><small>{detail}</small></article>;
+}
+
+function PlanEditor({ plan, token, onSaved, onError }: { plan: PlanRow; token: string; onSaved: () => Promise<void>; onError: (message: string) => void }) {
+  const [draft, setDraft] = useState({
+    name: plan.name,
+    monthlyPriceUsd: plan.monthlyPriceUsd,
+    tokenQuotaMonthly: plan.tokenQuotaMonthly,
+    warningThresholdPct: plan.warningThresholdPct,
+    executionSlotLimit: plan.executionSlotLimit,
+    retentionDays: plan.retentionDays,
+    projectLimit: plan.projectLimit,
+    trialDays: plan.trialDays,
+    isActive: plan.isActive
+  });
+  const [saving, setSaving] = useState(false);
+  const dirty = JSON.stringify(draft) !== JSON.stringify({
+    name: plan.name,
+    monthlyPriceUsd: plan.monthlyPriceUsd,
+    tokenQuotaMonthly: plan.tokenQuotaMonthly,
+    warningThresholdPct: plan.warningThresholdPct,
+    executionSlotLimit: plan.executionSlotLimit,
+    retentionDays: plan.retentionDays,
+    projectLimit: plan.projectLimit,
+    trialDays: plan.trialDays,
+    isActive: plan.isActive
+  });
+
+  const num = (key: keyof typeof draft) => ({
+    type: "number",
+    min: 0,
+    value: String(draft[key]),
+    onChange: (event: React.ChangeEvent<HTMLInputElement>) => setDraft((current) => ({ ...current, [key]: event.target.value === "" ? "" : Number(event.target.value) }))
+  });
+
+  async function save() {
+    setSaving(true);
+    try {
+      await patch(`/v1/admin/plans/${plan.id}`, draft, token);
+      await onSaved();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="admin-tr plan-editor">
+      <span><strong>{draft.name}</strong><small>{plan.key}</small></span>
+      <span><input {...num("monthlyPriceUsd")} aria-label="Monthly price USD" /></span>
+      <span><input {...num("tokenQuotaMonthly")} aria-label="Token quota monthly" /></span>
+      <span><input {...num("warningThresholdPct")} aria-label="Warning threshold percent" /></span>
+      <span><input {...num("executionSlotLimit")} aria-label="Execution slot limit" /></span>
+      <span><input {...num("projectLimit")} aria-label="Project limit" /></span>
+      <span><input {...num("retentionDays")} aria-label="Retention days" /></span>
+      <span><input {...num("trialDays")} aria-label="Trial days" /></span>
+      <span><input type="checkbox" checked={draft.isActive} onChange={(event) => setDraft((current) => ({ ...current, isActive: event.target.checked }))} aria-label="Active" /></span>
+      <span>{plan._count.subscriptions}</span>
+      <span><button className="admin-save" disabled={!dirty || saving} onClick={() => void save()}>{saving ? "Saving…" : dirty ? "Save" : "Saved"}</button></span>
+    </div>
+  );
 }

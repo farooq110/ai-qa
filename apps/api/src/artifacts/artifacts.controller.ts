@@ -2,15 +2,25 @@ import { Controller, Get, NotFoundException, Param, Res, UseGuards } from "@nest
 import { createReadStream, existsSync, statSync } from "node:fs";
 import type { FastifyReply } from "fastify";
 import { join } from "node:path";
+import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { AuthGuard } from "../auth/auth.guard";
+import { PermissionsGuard, RequirePermission } from "../rbac/permissions.guard";
 import { PrismaService } from "../database/prisma.service";
 import type { AuthenticatedUser } from "../auth/auth.types";
 import { CurrentUser } from "../auth/current-user.decorator";
+import { PERMISSIONS } from "@ai-qa/domain";
 
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, PermissionsGuard)
+@RequirePermission(PERMISSIONS.EXECUTIONS_VIEW)
 @Controller("v1/artifacts")
 export class ArtifactsController {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly s3: S3Client | null;
+
+  constructor(private readonly prisma: PrismaService) {
+    this.s3 = process.env.AWS_S3_BUCKET_NAME && process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY
+      ? new S3Client({ region: process.env.AWS_S3_REGION ?? "us-east-1" })
+      : null;
+  }
 
   @Get(":artifactId")
   async download(@CurrentUser() user: AuthenticatedUser, @Param("artifactId") artifactId: string, @Res() reply: FastifyReply) {
@@ -18,6 +28,19 @@ export class ArtifactsController {
       where: { id: artifactId, executionPlan: { organizationId: user.organizationId } }
     });
     if (!artifact) throw new NotFoundException("Artifact not found");
+
+    // S3-stored artifacts stream through the API (a redirect to a presigned URL
+    // would be blocked by the browser — the UI's fetch() follows it cross-origin
+    // without CORS headers and fails with "Failed to fetch").
+    if (artifact.storage === "s3") {
+      if (!this.s3) throw new NotFoundException("Artifact is in S3 but AWS is not configured");
+      const object = await this.s3.send(new GetObjectCommand({ Bucket: process.env.AWS_S3_BUCKET_NAME, Key: artifact.path }));
+      reply.header("Content-Type", object.ContentType ?? artifact.contentType);
+      if (object.ContentLength) reply.header("Content-Length", object.ContentLength);
+      reply.header("Content-Disposition", `inline; filename="${artifact.path.split("/").pop()}"`);
+      return reply.send(object.Body);
+    }
+
     const filePath = join(process.env.ARTIFACT_DIR ?? join(process.cwd(), "artifacts"), artifact.path);
     if (!existsSync(filePath)) throw new NotFoundException("Artifact file is no longer available");
     const size = statSync(filePath).size;

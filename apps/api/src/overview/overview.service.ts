@@ -12,7 +12,7 @@ export class OverviewService {
     if (!project) throw new NotFoundException("Project not found");
     const [context, tests, lastAnalysis, executions, generationRuns] = await Promise.all([
       subscriptionContext(this.prisma, user.organizationId),
-      this.prisma.testCase.groupBy({ by: ["status"], _count: { status: true }, where: { projectId } }),
+      this.prisma.testCase.groupBy({ by: ["status"], _count: { status: true }, where: { projectId, status: { not: "DRAFT" } } }),
       this.prisma.analysisRun.findFirst({ where: { projectId, status: "COMPLETED" }, orderBy: { completedAt: "desc" } }),
       this.prisma.executionPlan.findMany({ where: { projectId }, orderBy: { createdAt: "desc" }, take: 5, include: { items: { select: { status: true } } } }),
       this.prisma.generationRun.findFirst({ where: { projectId }, orderBy: { createdAt: "desc" } })

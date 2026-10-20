@@ -1,10 +1,13 @@
 import { BadRequestException, Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
 import { ExecutionsService } from "./executions.service";
 import { AuthGuard } from "../auth/auth.guard";
+import { PermissionsGuard, RequirePermission } from "../rbac/permissions.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import type { AuthenticatedUser } from "../auth/auth.types";
+import { PERMISSIONS } from "@ai-qa/domain";
 
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, PermissionsGuard)
+@RequirePermission(PERMISSIONS.EXECUTIONS_VIEW)
 @Controller("v1/projects/:projectId/executions")
 export class ExecutionsController {
   constructor(private readonly executionsService: ExecutionsService) {}
@@ -33,7 +36,8 @@ export class ExecutionsController {
   }
 }
 
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, PermissionsGuard)
+@RequirePermission(PERMISSIONS.EXECUTIONS_VIEW)
 @Controller("v1/executions")
 export class ExecutionsLibraryController {
   constructor(private readonly executionsService: ExecutionsService) {}

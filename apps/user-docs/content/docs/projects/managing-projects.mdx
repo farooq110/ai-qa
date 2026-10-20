@@ -1,0 +1,23 @@
+---
+title: Managing Projects
+description: Project cards, statuses, and deleting a project.
+---
+
+The **Projects** page lists every imported repository. Search by project name or repository, and filter by provider.
+
+## Card status
+
+| Status | Meaning |
+| --- | --- |
+| **ready to analyze** | No analysis yet. |
+| **analyzed** | Analysis exists; generation is available. |
+| **generating tests…** | A generation is in progress. |
+| **generated N tests** | The last generation created N drafts. |
+| **generation failed** | The reason is shown in the notice line. |
+| **generation timed out** | The generation ran unusually long; start it again. |
+
+**Analyze** is disabled until the provider is connected. **Generate tests** is disabled until an analysis exists. Hover a disabled button for the reason.
+
+## Delete a project
+
+The trash icon removes the project, **all its tests, and its run history**. It cannot be undone. CI webhooks added for the project are removed too. Only roles with the delete-projects permission (Admin by default) can do this.

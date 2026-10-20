@@ -11,9 +11,10 @@
     { "action": "click", "target": "MY ART" },
     { "action": "click", "target": "flag" },
     { "action": "click", "target": "APPLY" },
+    { "action": "wait", "target": "4" },
+    { "action": "assert", "condition": "visual", "target": "A flag decoration is visible on the right sleeve of the jersey" },
     { "action": "screenshot", "target": "before-flip" },
     { "action": "click", "target": "css:div.my-\\[24\\.5px\\] > div.flex > *:nth-child(2)" },
-    { "action": "assert", "condition": "visual", "target": "The decoration on the jersey in the LAST image is flipped vertically (rotated 180 degrees) compared to the same decoration in the REFERENCE image", "value": "before-flip" },
-    { "action": "assert", "condition": "visible", "target": "RIGHT SLEEVE DECORATION" }
+    { "action": "assert", "condition": "visual", "target": "The decoration on the jersey in the LAST image is flipped vertically (rotated 180 degrees) compared to the same decoration in the REFERENCE image", "value": "before-flip" }
   ]
 }

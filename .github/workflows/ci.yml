@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Generated/built output is gitignored, so a fresh checkout has neither.
+      # Without these, api and workers cannot resolve the Prisma types or the
+      # workspace packages (whose "types" point at dist/).
+      - name: Generate Prisma client
+        run: pnpm --filter @ai-qa/database generate
+
+      - name: Build workspace packages
+        run: pnpm -r --if-present --filter "./packages/*" build
+
+      - name: Typecheck
+        run: pnpm -r typecheck
+
+      # TODO: re-enable once ESLint 9 flat configs (eslint.config.mjs) exist.
+      # web, admin and api define a "lint" script but none has a config, so it
+      # fails with "couldn't find an eslint.config file".
+      # - name: Lint
+      #   run: pnpm -r lint

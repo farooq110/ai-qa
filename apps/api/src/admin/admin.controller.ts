@@ -10,11 +10,18 @@ export class AdminController {
   @Get("overview") overview() { return this.adminService.overview(); }
   @Get("organizations") organizations() { return this.adminService.organizations(); }
   @Get("plans") plans() { return this.adminService.plans(); }
+  @Patch("plans/:planId") updatePlan(@Param("planId") planId: string, @Body() body: Record<string, unknown>) { return this.adminService.updatePlan(planId, body ?? {}); }
   @Get("workers") workers() { return this.adminService.workers(); }
   @Get("audit") audit(@Query("take") take?: string) { return this.adminService.auditTrail(take ? Math.min(Number(take) || 100, 500) : 100); }
+  @Get("support-queries") supportQueries() { return this.adminService.supportQueryList(); }
 
   @Patch("organizations/:organizationId/subscription")
   updateSubscription(@Param("organizationId") organizationId: string, @Body() body: { status?: string }) {
     return this.adminService.updateSubscriptionStatus(organizationId, body.status ?? "");
+  }
+
+  @Patch("support-queries/:id")
+  updateSupportQueryStatus(@Param("id") id: string, @Body() body: { status?: string }) {
+    return this.adminService.updateSupportQueryStatus(id, body.status ?? "");
   }
 }

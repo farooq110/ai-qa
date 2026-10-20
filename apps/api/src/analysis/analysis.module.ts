@@ -3,7 +3,8 @@ import { AuthModule } from "../auth/auth.module";
 import { DatabaseModule } from "../database/database.module";
 import { RepositoryConnectionsModule } from "../repository-connections/repository-connections.module";
 import { AnalysisController } from "./analysis.controller";
+import { AnalysisProcessor } from "./analysis.processor";
 import { AnalysisService } from "./analysis.service";
 
-@Module({ imports: [AuthModule, DatabaseModule, RepositoryConnectionsModule], controllers: [AnalysisController], providers: [AnalysisService] })
+@Module({ imports: [AuthModule, DatabaseModule, RepositoryConnectionsModule], controllers: [AnalysisController], providers: [AnalysisService, AnalysisProcessor] })
 export class AnalysisModule {}

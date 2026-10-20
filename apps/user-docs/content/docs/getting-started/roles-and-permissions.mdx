@@ -1,0 +1,29 @@
+---
+title: Roles and Permissions
+description: What Admin, QA, and Developer can do by default, and how to change it.
+---
+
+Every member has one role. An Admin sets it when inviting a member and can change it later (see [Members](/docs/team/managing-members)).
+
+## Default permissions
+
+| Capability | Admin | QA | Developer |
+| --- | :-: | :-: | :-: |
+| View projects, tests, runs, results, CI settings, environments | ✓ | ✓ | ✓ |
+| Import projects | ✓ | ✓ | — |
+| Create, edit, approve, reject, delete tests | ✓ | ✓ | — |
+| Analyze, generate, start and cancel runs | ✓ | ✓ | — |
+| Turn CI on and change its settings | ✓ | ✓ | — |
+| View billing and roles | ✓ | ✓ | — |
+| Delete projects | ✓ | — | — |
+| Repository providers and environments (add, edit, delete) | ✓ | — | — |
+| Invite, remove, and change members | ✓ | — | — |
+| Choose plans and manage billing | ✓ | — | — |
+| Edit role permissions | ✓ | — | — |
+
+**Developer is read-only by default.** Grant more under [Customizing roles](/docs/team/customizing-roles). Admins always have full access and cannot be restricted.
+
+## How restrictions show up
+
+- Modules a role cannot view are hidden from the sidebar. Opening one directly redirects to the first module the member can open.
+- Permissions are resolved on every request, so changes apply on the member's next action.

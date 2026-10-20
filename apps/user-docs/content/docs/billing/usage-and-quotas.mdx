@@ -1,0 +1,21 @@
+---
+title: Usage and Quotas
+description: What consumes AI tokens, and how concurrent runs and projects are counted.
+---
+
+| Quota | Counted | Where you see it |
+| --- | --- | --- |
+| **AI tokens** | Calendar month, pooled across projects. | Billing usage meter, Overview plan panel, **AI N%** chip. |
+| **Concurrent runs** | Runs that are queued or running, per organization. | **N slots** chip, Overview plan panel. |
+| **Projects** | Imported repositories. | Checked when you import. |
+
+## What uses tokens
+
+- Generating and regenerating tests.
+- **AI draft** in the manual test editor.
+
+Reviewing, approving, running tests, and CI do not use tokens. When the quota is exhausted, generation stops until the month resets or you change plan. The meter turns red past your plan's warning threshold.
+
+## Concurrent runs
+
+A slot is one **run**, not one test. A dashboard run started while your organization is at the limit is refused. CI runs wait for a free slot and are not dropped. See [Running tests](/docs/executions/running-tests).

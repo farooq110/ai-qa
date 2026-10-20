@@ -1,0 +1,16 @@
+---
+title: Recording Steps
+description: Capture a flow from a real browser as steps.
+---
+
+Instead of typing steps, perform the flow once and import it.
+
+1. In the editor's **Steps** section, click **Record steps in a browser**. Your environment's URL opens in a separate window. The project needs an [environment](/docs/settings/environments) first.
+2. Click through the flow. A live counter shows steps captured.
+3. Click **Stop & import**. Captured clicks, typed text, and dropdown choices **replace** the current step list.
+
+<Shot src="/images/writing-test-steps/record-bar.png" alt="The record bar with the Record steps in a browser button" width={1656} height={129} />
+
+Typed passwords are recorded as `{{password}}`; no secret is stored in the test.
+
+Recorded targets are derived from what was on the page. Review them, add assertions (the recorder captures actions, not checks), and write an expected result before saving.

@@ -1,0 +1,29 @@
+---
+title: Running Tests
+description: Where runs start, which environment they use, and concurrency limits.
+---
+
+A **run** executes approved tests in a browser against one environment and records a result per test.
+
+## Start a run
+
+| From | Button | Runs |
+| --- | --- | --- |
+| Overview → Approved | **Run approved** | All approved tests of the selected project. |
+| Test cases | **Run selected** | The approved tests among the ones you ticked. One run per project if the selection spans projects. |
+| Executions | **Run all approved** | All approved tests of the chosen project, against the chosen environment. |
+| CI | Automatic | All approved tests, pinned to the deployed commit. See [How CI works](/docs/ci-cd/how-ci-works). |
+
+Pending, rejected, and archived tests never run, whichever way you start.
+
+## Environment
+
+A dashboard run uses the project's **default** environment unless you pick another on the Executions page. With no environment, a window asks for a name and URL, saves it as the default, and starts the run. See [Environments](/docs/settings/environments).
+
+## Concurrency and limits
+
+- Your plan allows a number of **concurrent runs**. If your organization is at that number, starting another from the dashboard fails with *"The plan allows N concurrent execution runs and M are already queued or running"*. CI runs wait for a free slot instead.
+- Inside a run, tests execute **one after another** in a single browser session (1280 × 800). Login happens once per run.
+- Runs are blocked while billing is locked, canceled, expired, or incomplete. See [Billing statuses](/docs/billing/billing-statuses).
+
+Results: [Viewing results](/docs/executions/viewing-results).

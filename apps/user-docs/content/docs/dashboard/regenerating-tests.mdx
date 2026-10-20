@@ -1,0 +1,18 @@
+---
+title: Regenerating Tests
+description: Add new candidates after your application changes.
+---
+
+Regeneration adds new **Pending review** candidates to your library. It never edits, removes, or re-opens approved or manual tests.
+
+Use it after you re-run [analysis](/docs/dashboard/analyzing-your-repository) on a changed branch:
+
+1. Open **Overview** and click **Regenerate**.
+2. For a wider pass, open the arrow menu and pick **Full regeneration**; confirm the dialog.
+3. Review the new candidates under **Test cases**.
+
+Duplicates are skipped by title, so repeating a regeneration does not flood the queue.
+
+<Callout type="warn">
+  Each regeneration spends AI tokens from the monthly pool. Watch the **AI N%** chip in the top bar.
+</Callout>

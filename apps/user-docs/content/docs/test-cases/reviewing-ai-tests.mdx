@@ -1,0 +1,35 @@
+---
+title: Reviewing AI Tests
+description: The review statuses, the inspector, versioning, and what approval means.
+---
+
+Every AI draft starts as **Pending review**. Only an **approved version** of a test can run.
+
+## Statuses
+
+| Status | Meaning |
+| --- | --- |
+| **Pending review** | New AI draft or manual test. |
+| **Approved** | A reviewer accepted this version; it runs. |
+| **Needs review** | The test was edited. The new version must be approved again. |
+| **Rejected** | Declined. Never runs. |
+| **Archived** | Retired. Kept because it has run history. |
+
+## Inspector
+
+Click a test to open the inspector beside the list. It shows classification (capability, category, priority, route), the AI's **confidence**, the commit the draft was **generated from** and last validated against, preconditions, steps, and the expected result. A **run gate** line states whether this version runs with the approved suite.
+
+Keyboard: `j` / `k` next and previous, `a` approve, `r` reject, `Esc` close.
+
+## Decisions
+
+| Action | Effect |
+| --- | --- |
+| **Approve** | This version becomes runnable. |
+| **Reject** | The test never runs. |
+| **Edit** | Opens the editor. Saving creates a **new version** and returns the test to Needs review; earlier versions are kept. |
+| **Delete** | Tests with run history are archived instead; tests that never ran are removed. |
+
+**Confidence** is the model's own estimate, not a measure of correctness. Read the steps, not the score.
+
+To act on many tests at once, see [Organizing tests](/docs/test-cases/organizing-tests).

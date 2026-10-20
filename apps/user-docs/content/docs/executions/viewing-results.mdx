@@ -1,0 +1,42 @@
+---
+title: Results and Evidence
+description: Read a run, open evidence, rerun failures, and what each status means.
+---
+
+The **Executions** page lists runs across projects, filtered by project and status. Each run is an **immutable record**: tests, results, branch, commit, and the environment URL visited.
+
+Click a run to open the inspector: one row per test with its status, error message, and duration. Pages refresh automatically while a run is queued or running.
+
+## Evidence
+
+| Evidence | Contents |
+| --- | --- |
+| **screenshot** | Full-page image at the **first failed step** of a test. |
+| **log** | JSON record of each step's outcome. Written for every test. |
+
+Visual and color assertions also save comparison images. Open one in the viewer or download it. Evidence cannot be opened if it has been cleaned up from storage.
+
+## Rerun and cancel
+
+- **Rerun failed** creates a new run (trigger *rerun*) of the **failed and blocked** tests at the same commit, branch, and environment.
+- **Cancel** is available while a run is queued or running. Tests that already finished keep their result; the rest are marked **Skipped**. A completed run cannot be changed.
+
+## Statuses
+
+| Run | Meaning |
+| --- | --- |
+| **Queued / Running** | Waiting for a slot / executing. |
+| **Passed** | Every test passed. |
+| **Failed** | At least one test failed. |
+| **Blocked** | Billing stopped the run before it started. |
+| **Canceled** | Stopped by a user, or superseded by a newer CI run. |
+
+| Test | Meaning |
+| --- | --- |
+| **Passed / Failed** | Every step held / a step failed. |
+| **Blocked** | Not run because billing blocked the run. |
+| **Skipped** | The test has no steps, or the run was canceled first. |
+
+The run list tally counts tests that are queued or running as *pending*.
+
+Reading failures: [Test steps reference](/docs/reference/test-steps) explains how targets resolve and what each step waits for.
