@@ -1,6 +1,6 @@
 {
   "name": "@ai-qa/recorder",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Proofline Recorder — desktop companion that opens the target app and records manual test steps.",
   "main": "main.js",

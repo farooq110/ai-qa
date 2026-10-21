@@ -18,6 +18,7 @@ import { InfoTooltip } from "@/components/info-tooltip";
 import { useFitViewport } from "@/components/use-fit-viewport";
 import { api, apiUrl, categoryLabels, fmtRelative, shortSha, statusClass, statusLabels } from "@/lib/api";
 import { can, requireSubscription, useMe, useProjects, useToast } from "@/lib/hooks";
+import { clearRecorderInstalledFlag, persistRecorderInstalled, readRecorderInstalledFlag, useRecorderPresence } from "@/lib/use-recorder-presence";
 import { PERMISSIONS } from "@ai-qa/domain";
 
 /**
@@ -837,13 +838,30 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
   const [regionPicker, setRegionPicker] = useState<{ index: number } | null>(null);
 
   useEffect(() => {
-    setRecorderInstalled(window.localStorage.getItem("proofline.recorderInstalled") === "1");
+    setRecorderInstalled(readRecorderInstalledFlag());
   }, []);
+
+  // Real-time recorder detection, page-wide: probes the recorder's local presence
+  // endpoint (/ping on 127.0.0.1:43117) immediately, every 2 seconds, and on window
+  // focus. The moment the recorder is installed and running — with no recording
+  // started and no recorder window opened — the flag flips, which enables the
+  // "Record steps in a browser" button and (through recorderInstalled) the setup
+  // modal's green check + disabled downloads.
+  const handleRecorderDetected = useCallback(() => {
+    // The live presence probe found the app running — persist the flag so the
+    // installed state survives reloads even if the app is quit later.
+    persistRecorderInstalled();
+    setRecorderInstalled(true);
+  }, []);
+  const { detected: recorderLive } = useRecorderPresence(handleRecorderDetected);
+  // The record button is enabled when the recorder is running right now (live
+  // probe) or was detected before on this machine (sticky flag). Otherwise it
+  // stays disabled — use the Recorder Setup button next to it to install first.
+  const canRecord = recorderLive || recorderInstalled;
 
   async function startRecording() {
     if (recordingStarting || recording) return;
     setRecordingStarting(true);
-    setRecorderInstalled(window.localStorage.getItem("proofline.recorderInstalled") === "1");
     setAiError("");
     try {
       const envs = await api<Array<{ id: string; url: string; isDefault: boolean }>>(`/v1/projects/${projectId}/environments`);
@@ -860,7 +878,7 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
           setRecording((current) => (current ? { ...current, count: data.count, status: data.status } : current));
           if (data.status === "recording") {
             // A successful attach marks the one-time setup as done on this machine.
-            window.localStorage.setItem("proofline.recorderInstalled", "1");
+            persistRecorderInstalled();
             setRecorderInstalled(true);
           }
           if (data.status === "stopped") window.clearInterval(poll);
@@ -1059,9 +1077,16 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
               <button type="button" className="mini-button" onClick={() => setSetupModalOpen(true)} title="Recorder setup — open, install, and instructions"><Download size={13} />Recorder Setup</button>
               {!recording ? (
                 <>
-                  <button type="button" className="record-btn" disabled={recordingStarting} onClick={() => void startRecording()}>
+                  <button
+                    type="button"
+                    className="record-btn"
+                    disabled={recordingStarting || !canRecord}
+                    title={canRecord ? "Start a recording session — the recorder opens your app in its own window" : "Install and run the Proofline Recorder first — click “Recorder Setup” to download it"}
+                    onClick={() => void startRecording()}
+                  >
                     <CircleDot size={14} /> {recordingStarting ? "Opening..." : "Record steps in a browser"}
                   </button>
+                  {!canRecord && <small className="record-hint">The button unlocks automatically as soon as the Proofline Recorder is installed and running on this computer — click “Recorder Setup” to get it.</small>}
                   <small className="record-hint">Opens your app in the Proofline Recorder desktop app - click through the flow and every action is captured as a step. Passwords are masked as {'{{password}}'}.</small>
                 </>
               ) : (
@@ -1179,15 +1204,10 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
           onClose={() => setSetupModalOpen(false)}
           onLaunch={launchDeepLink}
           onUninstall={() => {
-            window.localStorage.removeItem("proofline.recorderInstalled");
+            clearRecorderInstalledFlag();
             setRecorderInstalled(false);
           }}
-          onDetected={() => {
-            // The live presence probe found the app running — persist the flag so the
-            // installed state survives reloads even if the app is quit later.
-            window.localStorage.setItem("proofline.recorderInstalled", "1");
-            setRecorderInstalled(true);
-          }}
+          onDetected={handleRecorderDetected}
         />
       )}
     </div>

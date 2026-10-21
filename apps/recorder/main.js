@@ -1,7 +1,6 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const http = require("node:http");
-const { readFileSync, writeFileSync, mkdirSync, copyFileSync, chmodSync, statSync, existsSync, rmSync } = require("node:fs");
-const { execSync } = require("node:child_process");
+const { readFileSync, writeFileSync, mkdirSync, copyFileSync, chmodSync, statSync, existsSync, rmSync, readdirSync } = require("node:fs");
 const { homedir } = require("node:os");
 const path = require("node:path");
 // Raw script text — injected into the recorded page. Never require() it: it is
@@ -18,11 +17,23 @@ const launchedAtLogin = (() => {
 })();
 const backgroundLaunch = process.argv.includes(BACKGROUND_FLAG) || launchedAtLogin;
 
-// Linux AppImages cannot preserve chrome-sandbox's setuid bit inside the squashfs
-// mount, and Chromium aborts instead of falling back when the file exists with wrong
-// permissions. The recorder only renders pages the user chooses to record, so the
-// SUID sandbox is disabled there; Windows/macOS keep their native sandboxes.
-if (process.platform === "linux") app.commandLine.appendSwitch("no-sandbox");
+// Linux compatibility: minimal distros ship without the SUID chrome-sandbox helper,
+// GPU drivers (e.g. NVIDIA) may be missing or incompatible, and software
+// rasterization can crash on stripped-down systems. These switches keep Chromium
+// launching reliably across all Linux distributions — with or without a GPU.
+// Video-acceleration paths are disabled too: the VA-API probe dlopens the system
+// libva/Intel driver and prints "libva error: … init failed" on machines without
+// an Intel GPU (harmless, but noisy). The recorder records DOM events — it never
+// needs hardware video decode — so the whole VA-API stack is switched off and the
+// app stays self-contained (no system library dependencies).
+// Windows/macOS keep their native sandboxes and GPU acceleration.
+if (process.platform === "linux") {
+  app.commandLine.appendSwitch("no-sandbox");
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-software-rasterizer");
+  app.commandLine.appendSwitch("disable-accelerated-video-decode");
+  app.commandLine.appendSwitch("disable-features", "VaapiVideoDecodeLinuxGL,VaapiVideoEncoder,VaapiIgnoreDriverChecks");
+}
 
 // Dev machines can't set the SUID sandbox helper (needs root). Packaged installers
 // configure Chromium's sandbox correctly, so this only applies to source runs.
@@ -41,6 +52,9 @@ const SCREENSHOT_EVERY_PUSHES = 3; // ~6s between pushed screenshots
  * Idempotently ensures `x-scheme-handler/proofline-recorder=proofline-recorder.desktop`
  * exists under [Default Applications] (and [Added Associations]) in a mimeapps.list
  * file, creating the file/sections as needed without disturbing other entries.
+ * The default-handler lookup (xdg-settings / GLib / Firefox) only respects
+ * [Default Applications], so the entry ALWAYS lands there — [Added Associations]
+ * merely feeds "Open with…" lists, so it is mirrored there too when present.
  */
 function addMimeappsAssociation(file) {
   try {
@@ -48,23 +62,51 @@ function addMimeappsAssociation(file) {
     let content = "";
     try { content = readFileSync(file, "utf8"); } catch {}
     if (content.includes(line)) return;
-    const section = (names) => {
-      for (const name of names) {
-        const marker = `[${name}]`;
-        if (content.includes(marker)) return marker;
+    const ensureInSection = (content, sectionName) => {
+      const marker = `[${sectionName}]`;
+      if (content.includes(marker)) {
+        return content.replace(marker, `${marker}\n${line}`);
       }
-      return null;
+      return content.trimEnd() + (content.trim() ? "\n\n" : "") + marker + "\n" + line + "\n";
     };
-    const target = section(["Default Applications", "Added Associations"]);
-    if (target) {
-      content = content.replace(target, `${target}\n${line}`);
-    } else {
-      content = content.trimEnd() + (content.trim() ? "\n\n" : "") + "[Default Applications]\n" + line + "\n";
+    content = ensureInSection(content, "Default Applications");
+    if (content.includes("[Added Associations]")) {
+      content = content.replace("[Added Associations]", `[Added Associations]\n${line}`);
     }
     mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, content);
   } catch (error) {
     console.error(`[recorder] mimeapps update failed (${file}):`, error.message);
+  }
+}
+
+/**
+ * Idempotently maintains the `x-scheme-handler/proofline-recorder` entry in the
+ * applications directory's mimeinfo.cache — the same file `update-desktop-database`
+ * would produce. Replicating it with a plain file write keeps the app fully
+ * self-contained (no external tools on minimal Linux) while desktop environments
+ * and browsers that consult the cache still resolve the handler name.
+ */
+function updateMimeinfoCache(appsDir, remove) {
+  try {
+    const file = path.join(appsDir, "mimeinfo.cache");
+    const entry = `x-scheme-handler/proofline-recorder=proofline-recorder.desktop`;
+    let content = "";
+    try { content = readFileSync(file, "utf8"); } catch {}
+    let lines = content.split("\n");
+    lines = lines.filter((line) => line.trim() !== entry);
+    if (!remove) {
+      const marker = "[MIME Cache]";
+      const index = lines.findIndex((line) => line.trim() === marker);
+      if (index >= 0) lines.splice(index + 1, 0, entry);
+      else lines = [...(content.trim() ? lines.filter((line) => line.trim() !== "") : []), marker, entry];
+    }
+    let out = lines.filter((line, index) => line !== "" || index < lines.length - 1).join("\n");
+    if (!out.endsWith("\n")) out += "\n";
+    mkdirSync(appsDir, { recursive: true });
+    writeFileSync(file, out);
+  } catch (error) {
+    console.error("[recorder] mimeinfo.cache update failed:", error.message);
   }
 }
 
@@ -101,14 +143,16 @@ function installLinuxIntegration(appImagePath) {
       "NoDisplay=true"
     ].join("\n");
     writeFileSync(path.join(appsDir, "proofline-recorder.desktop"), entry + "\n");
-    execSync("xdg-mime default proofline-recorder.desktop x-scheme-handler/proofline-recorder", { stdio: "ignore" });
-    // Modern DEs read ~/.config/mimeapps.list (written by xdg-mime above), but KDE,
+    // Protocol registration is done purely through direct file writes — no external
+    // tools (xdg-mime / update-desktop-database / xdg-settings) are invoked, so the
+    // app stays fully self-contained and never breaks on minimal Linux systems that
+    // lack the xdg-utils package. Modern DEs read ~/.config/mimeapps.list, but KDE,
     // XFCE, older distros and some sandboxed browsers consult the legacy
-    // ~/.local/share/applications/mimeapps.list instead — register in BOTH so the
-    // protocol resolves on any Linux system.
+    // ~/.local/share/applications/mimeapps.list instead — write BOTH so the protocol
+    // resolves on any Linux system. mimeinfo.cache (below) completes the set.
     addMimeappsAssociation(path.join(appsDir, "mimeapps.list"));
     addMimeappsAssociation(path.join(home, ".config", "mimeapps.list"));
-    try { execSync(`update-desktop-database ${appsDir}`, { stdio: "ignore" }); } catch {}
+    updateMimeinfoCache(appsDir, false);
 
     const autostartDir = path.join(home, ".config", "autostart");
     mkdirSync(autostartDir, { recursive: true });
@@ -132,13 +176,205 @@ let session = null; // { id, project, api, token, target, win, events, pushTimer
 let statusWindow = null;
 let quitting = false;
 
+/**
+ * Loopback presence endpoint — the web app's live "is the recorder installed and
+ * running RIGHT NOW" check, probed from any origin (loopback is
+ * mixed-content-exempt; the OPTIONS preflight answers Chrome's Private Network
+ * Access and Local Network Access requirements).
+ *
+ * Robustness rules learned from net::ERR_CONNECTION_REFUSED field reports:
+ *  - Bind BOTH loopback stacks. Browsers spell the host as "localhost", which
+ *    can resolve to ::1 first (or only) on some Linux setups; an IPv4-only
+ *    listener then REFUSES those connections. Serving on 127.0.0.1 AND ::1
+ *    makes every host spelling connect.
+ *  - Bind the moment the single-instance lock is acquired — before any window,
+ *    before GPU init — so the endpoint answers within milliseconds of the
+ *    install command launching the app, even if window/GUI startup later hangs.
+ *  - /ping reports the app version and pid, so the browser UI (and the terminal
+ *    log) can confirm exactly WHICH build is answering — an outdated AppImage
+ *    is instantly identifiable instead of failing silently.
+ */
+const PRESENCE_PORT = 43117;
+const PRESENCE_HOSTS = ["127.0.0.1", "::1"];
+
+function presencePayload() {
+  return { app: PROTOCOL, version: app.getVersion(), pid: process.pid, running: true };
+}
+
+function handlePresenceRequest(request, response) {
+  // CORS for any origin (the web app may be localhost or the production domain).
+  // Echoing whatever headers the preflight asks about keeps the handshake valid
+  // across browsers; the fallback covers plain (non-preflight) requests.
+  const requestedHeaders = request.headers["access-control-request-headers"];
+  response.setHeader("Access-Control-Allow-Origin", "*");
+  response.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+  response.setHeader("Access-Control-Allow-Headers", Array.isArray(requestedHeaders) ? requestedHeaders.join(", ") : (requestedHeaders ?? "Content-Type"));
+  // A public HTTPS page probing loopback passes through Chrome's Private Network
+  // Access gate (older Chrome) and its Local Network Access successor (Chrome
+  // 142+) — answering BOTH opt-in headers keeps the /ping probe allowed on every
+  // Chrome generation; browsers that don't know a header simply ignore it.
+  response.setHeader("Access-Control-Allow-Private-Network", "true");
+  response.setHeader("Access-Control-Allow-Non-Local-Network", "true");
+  response.setHeader("Access-Control-Max-Age", "86400");
+  if (request.method === "OPTIONS") {
+    response.writeHead(204);
+    response.end();
+    return;
+  }
+  const requestPath = request.url.split("?")[0];
+  if ((request.method === "GET" || request.method === "HEAD") && (requestPath === "/ping" || requestPath === "/")) {
+    response.setHeader("Content-Type", "application/json");
+    if (request.method === "HEAD") {
+      response.writeHead(200);
+      response.end();
+      return;
+    }
+    response.writeHead(200);
+    response.end(JSON.stringify(presencePayload()));
+    return;
+  }
+  response.writeHead(404);
+  response.end();
+}
+
+/** One listener per loopback host. EADDRINUSE = a resident instance is already
+ *  serving (harmless — that instance keeps the endpoint up); EAFNOSUPPORT = this
+ *  machine has no such network stack (skip it, the other stack still serves);
+ *  anything else gets one self-healing retry after a second. */
+function startPresenceListener(host, retriesLeft = 1) {
+  const display = host === "::1" ? "[::1]" : host;
+  const server = http.createServer(handlePresenceRequest);
+  server.on("error", (error) => {
+    if (error.code === "EADDRINUSE") {
+      console.error(`[recorder] presence server on ${display}: EADDRINUSE — the resident instance keeps serving`);
+      return;
+    }
+    if (error.code === "EAFNOSUPPORT") {
+      console.error(`[recorder] presence server: ${display} not available on this machine — skipped`);
+      return;
+    }
+    if (retriesLeft > 0) {
+      console.error(`[recorder] presence server on ${display}: ${error.code ?? error.message} — retrying in 1s`);
+      setTimeout(() => startPresenceListener(host, retriesLeft - 1), 1000);
+      return;
+    }
+    console.error(`[recorder] presence server on ${display}: ${error.code ?? error.message}`);
+  });
+  server.listen(PRESENCE_PORT, host, () => {
+    console.log(`[recorder] presence endpoint on http://${display}:${PRESENCE_PORT}/ping`);
+  });
+}
+
+function startPresenceServer() {
+  for (const host of PRESENCE_HOSTS) startPresenceListener(host);
+}
+
+/** Is our own endpoint answering on either loopback stack? Timeout-bound, never
+ *  throws — used by the lock-denied path to tell a healthy resident instance
+ *  from a hung/outdated one that holds the lock but serves nothing. */
+function probeOwnEndpoint(timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let pending = PRESENCE_HOSTS.length;
+    const done = (ok) => {
+      if (settled) return;
+      if (ok) { settled = true; resolve(true); }
+      else if (--pending === 0) { settled = true; resolve(false); }
+    };
+    for (const host of PRESENCE_HOSTS) {
+      const req = http.get({ host, port: PRESENCE_PORT, path: "/ping" }, (res) => {
+        res.resume();
+        done(res.statusCode === 200);
+      });
+      req.on("timeout", () => { req.destroy(); done(false); });
+      req.on("error", () => done(false));
+      req.setTimeout(timeoutMs);
+    }
+  });
+}
+
+/** Linux: pids of OTHER Proofline Recorder processes (downloaded AppImage run,
+ *  stable-home run, or protocol deep-link launch), identified strictly by /proc
+ *  cmdline contents — never by fuzzy name matching, so unrelated processes are
+ *  never touched. Empty on non-Linux or when nothing matches. */
+function findRecorderProcesses() {
+  const found = [];
+  try {
+    for (const entry of readdirSync("/proc")) {
+      if (!/^\d+$/.test(entry)) continue;
+      const pid = Number(entry);
+      if (pid === process.pid) continue;
+      try {
+        const cmdline = readFileSync(`/proc/${entry}/cmdline`, "utf8");
+        if (cmdline.includes("ProoflineRecorder.AppImage") || cmdline.includes("proofline-recorder")) found.push(pid);
+      } catch {} // process exited between readdir and read — ignore
+    }
+  } catch {}
+  return found;
+}
+
+/** Waits (bounded) until every pid is gone. `process.kill(pid, 0)` is the classic
+ *  existence probe — signal 0 is delivered as nothing at all. */
+function waitForExit(pids, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve) => {
+    const tick = () => {
+      const alive = pids.some((pid) => { try { process.kill(pid, 0); return true; } catch { return false; } });
+      if (!alive || Date.now() >= deadline) resolve(!alive);
+      else setTimeout(tick, 150);
+    };
+    tick();
+  });
+}
+
 ipcMain.on("quit-app", () => app.quit());
 app.on("before-quit", () => { quitting = true; });
 
+// The very first line in the terminal: which build is starting. When several
+// builds of the recorder coexist on a machine (downloaded AppImage vs. registered
+// stable copy), this line and the /ping version answer remove all guesswork.
+console.log(`[recorder] Proofline Recorder ${app.getVersion()} (pid ${process.pid}) starting`);
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
-  app.quit();
+  // One process per machine: the lock owner is THE recorder. Every later launch
+  // either finds it healthy — serving /ping — and exits quietly, or, when the
+  // lock holder is an outdated/hung build that never bound the port (the exact
+  // state behind net::ERR_CONNECTION_REFUSED in the browser), takes over:
+  // terminate it and relaunch this build, which binds the endpoint immediately.
+  void probeOwnEndpoint(400).then((serving) => {
+    if (serving) {
+      console.log(`[recorder] another instance is already running and serving http://127.0.0.1:${PRESENCE_PORT}/ping — this launch exits; the running one keeps the presence endpoint up`);
+      app.quit();
+      return;
+    }
+    if (process.platform !== "linux") {
+      console.log("[recorder] another instance is already running but is not serving — this launch exits. Quit it from its window/tray and start this build again.");
+      app.quit();
+      return;
+    }
+    const stale = findRecorderProcesses();
+    if (stale.length === 0) {
+      console.log(`[recorder] lock is held but nothing is serving port ${PRESENCE_PORT} and no recorder process was found — exiting. If detection still fails, run: pkill -f ProoflineRecorder ; ./ProoflineRecorder.AppImage`);
+      app.quit();
+      return;
+    }
+    console.log(`[recorder] lock holder (pid ${stale.join(", ")}) is not serving port ${PRESENCE_PORT} — an outdated or hung build. Taking over...`);
+    for (const pid of stale) { try { process.kill(pid, "SIGTERM"); } catch {} }
+    void waitForExit(stale, 3000).then((exited) => {
+      if (!exited) for (const pid of stale) { try { process.kill(pid, "SIGKILL"); } catch {} }
+      console.log("[recorder] stale instance terminated — relaunching this build");
+      try { app.relaunch(); } catch {}
+      app.quit();
+    });
+  });
 } else {
+  // Serve /ping from the earliest possible moment — before windows, before GPU init
+  // — so the web app detects the recorder the instant the install command starts
+  // it ("chmod +x … && ./ProoflineRecorder.AppImage"), with no manual launch, no
+  // recording, and no recorder window required.
+  startPresenceServer();
+
   // Install-once integration: on Linux the AppImage self-installs (stable copy +
   // protocol registration + autostart at login) on every launch, so a single run
   // after download is all the setup a user ever does. Windows/macOS register the
@@ -170,8 +406,8 @@ if (!gotLock) {
   });
 
   app.whenReady().then(() => {
-    startPresenceServer();
     // Windows/Linux cold start: the deep link is the last argv entry.
+    // (The presence endpoint is already up — started at lock acquisition above.)
     const link = process.argv.find((arg) => arg.startsWith(`${PROTOCOL}://`));
     if (link) handleDeepLink(link);
     // Background (login autostart / --background): stay resident silently, no window.
@@ -185,44 +421,8 @@ if (!gotLock) {
 }
 
 /**
- * Loopback presence endpoint. The web app's setup modal probes this to detect that the
- * recorder is installed and running on this machine — in real time, from any origin
- * (including the HTTPS production site: loopback is mixed-content-exempt, and the
- * OPTIONS preflight answers Chrome's Private Network Access requirements).
+ * Loopback presence endpoint — defined and started above, at lock acquisition.
  */
-const PRESENCE_PORT = 43117;
-
-function startPresenceServer() {
-  const server = http.createServer((request, response) => {
-    // CORS for any origin (the web app may be localhost or the production domain).
-    response.setHeader("Access-Control-Allow-Origin", "*");
-    response.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-    response.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    // Chrome Private Network Access: public HTTPS pages must be allowed to reach us.
-    response.setHeader("Access-Control-Allow-Private-Network", "true");
-    response.setHeader("Access-Control-Max-Age", "86400");
-    if (request.method === "OPTIONS") {
-      response.writeHead(204);
-      response.end();
-      return;
-    }
-    if (request.method === "GET" && request.url.split("?")[0] === "/ping") {
-      response.setHeader("Content-Type", "application/json");
-      response.writeHead(200);
-      response.end(JSON.stringify({ app: PROTOCOL, version: app.getVersion(), running: true }));
-      return;
-    }
-    response.writeHead(404);
-    response.end();
-  });
-  server.on("error", (error) => {
-    // A resident instance already serving the port is fine; anything else is non-fatal.
-    console.error("[recorder] presence server:", error.code ?? error.message);
-  });
-  server.listen(PRESENCE_PORT, "127.0.0.1", () => {
-    console.log(`[recorder] presence endpoint on http://127.0.0.1:${PRESENCE_PORT}/ping`);
-  });
-}
 
 const STATUS_HTML = `<!doctype html><html><head><meta charset="utf-8"><style>
   body { font-family: system-ui, sans-serif; background: #0f1418; color: #d7e2dc; padding: 22px; }
@@ -298,7 +498,7 @@ function uninstallRecorder() {
       }
       for (const artifact of artifacts) { try { rmSync(artifact, { force: true }); } catch {} }
       try { rmSync(path.join(home, ".local", "share", "proofline-recorder"), { recursive: true, force: true }); } catch {}
-      try { execSync(`update-desktop-database ${path.join(home, ".local", "share", "applications")}`, { stdio: "ignore" }); } catch {}
+      updateMimeinfoCache(path.join(home, ".local", "share", "applications"), true);
     } else if (app.isPackaged) {
       try { app.removeAsDefaultProtocolClient(PROTOCOL); } catch {}
       if (process.platform === "win32" || process.platform === "darwin") {
