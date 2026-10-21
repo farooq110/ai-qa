@@ -66,6 +66,12 @@ exports.default = function hardenLinuxPack(context) {
       '  echo "Install them with your package manager (e.g. sudo apt install libgtk-3-0 libnss3 libasound2, or dnf/yast equivalents) and try again." >&2',
       '  exit 1',
       "fi",
+      // Belt and braces for the libva probe: even with VA-API switched off in
+      // main.js, some Chromium builds still dlopen the system libva and its
+      // driver can print "libva error: ... init failed" (harmless probe noise on
+      // machines without an Intel GPU). LIBVA_MESSAGING_LEVEL=0 tells libva to
+      // stay quiet; kept overridable for anyone debugging video acceleration.
+      'export LIBVA_MESSAGING_LEVEL="${LIBVA_MESSAGING_LEVEL:-0}"',
       'exec "$BIN" --no-sandbox "$@"'
     ].join("\n") + "\n"
   );

@@ -610,9 +610,23 @@ html:has(.shell), html:has(.auth-shell) { background: var(--bg); }
 .setup-modal { width: min(100%, 600px); }
 .setup-modal .modal-body { display: grid; gap: 14px; }
 .setup-modal .meta { margin-top: 2px; }
-.setup-status-row { display: flex; }
+.setup-status-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .setup-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line-strong); background: var(--raised); color: var(--muted); font-size: 11.5px; font-weight: 600; }
 .setup-chip.ok { color: #1f8a70; border-color: #215f52; background: #10312a; }
+.setup-detect-hint { display: grid; gap: 4px; margin-top: -4px; }
+.setup-detect-hint small { display: block; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.setup-detect-hint small.warn { color: #d08770; }
+.setup-detect-hint b { font-weight: 600; }
+/* The Linux steps' "still not detected" troubleshooting hint shares the warn color. */
+.record-steps small.warn { color: #d08770; }
+.spin { animation: spin .8s linear infinite; }
+.record-steps li > strong { display: block; margin-bottom: 2px; }
+.command-row { display: flex; align-items: stretch; gap: 6px; margin-top: 5px; }
+.command-row code { flex: 1; min-width: 0; margin-top: 0; display: flex; align-items: center; }
+.copy-button { display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--raised); color: var(--muted); font-size: 11px; font-weight: 600; white-space: nowrap; cursor: pointer; transition: color .14s ease, border-color .14s ease, background .14s ease; }
+.copy-button:hover:not(:disabled) { color: var(--fg); border-color: #3e5a52; }
+.copy-button.copied { color: #1f8a70; border-color: #215f52; background: #10312a; }
+.copy-button:disabled { opacity: .45; cursor: not-allowed; }
 .setup-section { display: grid; gap: 9px; }
 .setup-section > strong { font-size: 12.5px; }
 .setup-download { justify-self: start; }
