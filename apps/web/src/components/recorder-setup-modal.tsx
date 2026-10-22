@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Check, CircleDot, Copy, Download, RotateCw, X } from "lucide-react";
-import { probeRecorder } from "@/lib/use-recorder-presence";
+import { uninstallRecorder } from "@/lib/use-recorder-presence";
 
 type Platform = "windows" | "mac" | "linux";
 
@@ -72,36 +72,46 @@ function CopyButton({ text, disabled = false }: { text: string; disabled?: boole
 
 /**
  * On-demand recorder setup: open/close whenever the user wants, never auto-shown.
- * When the recorder is already installed on this machine, downloads are disabled —
- * instructions stay viewable, and only the Open action remains.
+ * Opening the modal sends NO requests — live detection comes from the single
+ * page-wide poller through the `running` / `serverVersion` props, and the
+ * only extra network activity is the user's explicit clicks ("Check again",
+ * "Uninstall", downloads). When the recorder is installed on this machine,
+ * downloads are disabled — instructions stay viewable, and only the Open action
+ * remains.
  */
-export function RecorderSetupModal({ apiUrl, installed, deepLink, onClose, onLaunch, onUninstall, onDetected }: {
+export function RecorderSetupModal({ apiUrl, installed, running, serverVersion, deepLink, probing = false, onClose, onLaunch, onUninstall, onProbeNow }: {
   apiUrl: string;
   installed: boolean;
+  /** Live presence-poll result from the page's single poller. */
+  running: boolean;
+  /** Build the running recorder reported through /ping (null when unknown). */
+  serverVersion: string | null;
   deepLink: string | null;
+  /** True while the shared presence hook has a probe in flight — backs the
+   *  "Check again" spinner/disable instead of a fake timer. */
+  probing?: boolean;
   onClose: () => void;
   onLaunch: (link: string) => void;
+  /** Uninstall flow: clears the installed state, stops the pings, and disables recording. */
   onUninstall: () => void;
-  onDetected: () => void;
+  /** Manual, user-gesture probe ("Check again") from the shared presence hook —
+   *  ONE immediate request that also restarts the automatic checks with a fresh
+   *  10-attempt budget. */
+  onProbeNow: () => Promise<void>;
 }) {
   const [platform, setPlatform] = useState<Platform>(detectPlatform);
-  const [running, setRunning] = useState(false);
-  // Build the running recorder reported through /ping — displayed next to the
-  // installed chip so an outdated AppImage is visible at a glance (v1.1.0 is the
-  // first build that serves the endpoint on both loopback stacks).
-  const [serverVersion, setServerVersion] = useState<string | null>(null);
-  const [rechecking, setRechecking] = useState(false);
+  const [uninstalling, setUninstalling] = useState(false);
   // null until measured client-side (avoids SSR hydration mismatches).
   const [secureContext, setSecureContext] = useState<boolean | null>(null);
   // "granted" | "prompt" | "denied" from the Permissions API; "unknown" where the
   // browser doesn't implement the local-network-access permission (e.g. Firefox).
   const [lnaState, setLnaState] = useState<"granted" | "prompt" | "denied" | "unknown">("unknown");
   const selected = PLATFORMS.find((entry) => entry.key === platform)!;
-  const probeNowRef = useRef<() => void>(() => {});
 
   // Chrome 142+ gates requests from public sites to local apps (127.0.0.1 included)
-  // behind the "Local network access" site permission — surfacing its state tells
-  // the user exactly why the probe isn't flipping the chip yet, and how to fix it.
+  // behind the "Local network access" site permission — surfacing its state tells the
+  // user exactly why the probe isn't flipping the chip yet, and how to fix it.
+  // (A permissions query only — no request to the recorder happens here.)
   useEffect(() => {
     setSecureContext(window.isSecureContext);
     let status: PermissionStatus | null = null;
@@ -115,48 +125,43 @@ export function RecorderSetupModal({ apiUrl, installed, deepLink, onClose, onLau
     return () => { if (status) status.onchange = null; };
   }, []);
 
-  // Live detection: while the modal is open, poll the recorder's local presence
-  // endpoint — plus an immediate re-probe when the browser window regains focus or
-  // the tab becomes visible (the user just ran the installer in a terminal and
-  // switched back), and a "Check again" button for an instant, gesture-driven probe.
-  // The moment the app is installed and running the indicator flips green and every
-  // download button disables — no page refresh, no recording, no recorder window
-  // needed. Loopback is mixed-content-exempt and the endpoint answers CORS and
-  // network-access preflights, so this works from any origin including HTTPS.
-  useEffect(() => {
-    let cancelled = false;
-    const probe = async () => {
-      const presence = await probeRecorder();
-      if (cancelled) return;
-      setRunning(presence.running);
-      setServerVersion(presence.version);
-      if (presence.running && !installed) onDetected();
-    };
-    probeNowRef.current = () => {
-      setRechecking(true);
-      window.setTimeout(() => setRechecking(false), 600);
-      void probe();
-    };
-    void probe();
-    const interval = window.setInterval(() => void probe(), 2000);
-    const onFocus = () => void probe();
-    const onVisibility = () => { if (document.visibilityState === "visible") void probe(); };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
-  }, [installed, onDetected]);
-
   const effectivelyInstalled = installed || running;
   const installedLabel = effectivelyInstalled
     ? `Installed on this computer${serverVersion ? ` \u00b7 v${serverVersion}` : ""}`
     : "Not installed yet";
   const linuxDownloadCommand = `curl -L -o ProoflineRecorder.AppImage "${apiUrl}/v1/recordings/installer/linux"`;
   const linuxRunCommand = "chmod +x ProoflineRecorder.AppImage && ./ProoflineRecorder.AppImage";
+
+  /** "Check again": the ONLY way this modal triggers a probe — a direct user
+   *  gesture, never an automatic request. ONE request fires (one loopback
+   *  spelling) and it also restarts the automatic checks with a fresh 10-attempt
+   *  budget. The click gives Chrome the user activation it needs to show its
+   *  local-network permission prompt. */
+  const checkAgain = () => {
+    if (probing) return; // a probe is already in flight — one request at a time
+    void onProbeNow();
+  };
+
+  /** Uninstall: asks the RUNNING recorder to stop and remove itself over its local
+   *  HTTP endpoint (POST /uninstall) — never a proofline-recorder:// navigation, so
+   *  the browser never shows its "Open xdg-open?" / "No App Available" dialogs.
+   *  Afterwards the caller stops the pings, the chip flips back to "Not installed
+   *  yet", downloads re-enable, and "Record steps in a browser" disables. When the
+   *  recorder isn't actually running (stale installed flag), the request simply
+   *  fails and the local state is cleared anyway — nothing is left to uninstall. */
+  const handleUninstall = async () => {
+    if (uninstalling) return;
+    setUninstalling(true);
+    try {
+      const accepted = await uninstallRecorder();
+      if (!accepted) console.info("[recorder-setup] recorder is not running — clearing the installed state locally");
+    } catch {
+      // Not reachable — same outcome: reset the UI state below.
+    } finally {
+      setUninstalling(false);
+      onUninstall();
+    }
+  };
 
   return (
     <div className="modal-backdrop setup-backdrop" role="dialog" aria-modal="true">
@@ -178,25 +183,22 @@ export function RecorderSetupModal({ apiUrl, installed, deepLink, onClose, onLau
               <button
                 type="button"
                 className="mini-button"
-                onClick={() => probeNowRef.current()}
-                title="Re-check immediately — this click also gives Chrome the user gesture it needs to show its local-network permission prompt"
+                disabled={probing}
+                onClick={checkAgain}
+                title="Re-check immediately (one request) and restart the automatic checks — this click also gives Chrome the user gesture it needs to show its local-network permission prompt"
               >
-                <RotateCw size={12} className={rechecking ? "spin" : undefined} />Check again
+                <RotateCw size={12} className={probing ? "spin" : undefined} />{probing ? "Checking…" : "Check again"}
               </button>
             )}
             {effectivelyInstalled && (
               <button
                 type="button"
                 className="mini-button danger"
-                title="Remove the recorder from this computer (registration, autostart, and app files)"
-                onClick={() => {
-                  // The OS launches the recorder's uninstall routine via the protocol.
-                  window.location.href = "proofline-recorder://uninstall";
-                  setRunning(false);
-                  onUninstall();
-                }}
+                disabled={uninstalling}
+                title="Stop and uninstall the Proofline Recorder (registration, autostart, and app files)"
+                onClick={() => void handleUninstall()}
               >
-                <X size={12} />Uninstall
+                <X size={12} />{uninstalling ? "Uninstalling…" : "Uninstall"}
               </button>
             )}
           </div>
@@ -212,7 +214,7 @@ export function RecorderSetupModal({ apiUrl, installed, deepLink, onClose, onLau
                 </small>
               ) : (
                 <small>
-                  After the install command starts the recorder, this flips to <b>Installed</b> within seconds — no recorder window needed. Chrome may ask to allow <b>Local network access</b> for this site: choose <b>Allow</b> so the site can see the recorder.
+                  After the install command starts the recorder, this flips to <b>Installed</b> — the page checks automatically (one request at a time, with increasing intervals up to 10 seconds, at most 10 checks before it pauses), or click <b>Check again</b> for an instant check that also restarts the automatic ones. Chrome may ask to allow <b>Local network access</b> for this site: choose <b>Allow</b> so the site can see the recorder.
                 </small>
               )}
             </div>
@@ -265,9 +267,8 @@ export function RecorderSetupModal({ apiUrl, installed, deepLink, onClose, onLau
                     <CopyButton text={linuxRunCommand} />
                   </div>
                   <small>If it doesn&apos;t start, run it with <code>--appimage-extract-and-run</code>.</small>
-                  <small>Linux may ask to confirm the first launch — browsers on Linux sometimes label the launcher generically as <code>xdg-open</code>; choosing Open (and, if offered, <i>Always allow</i>) starts the Proofline Recorder.</small>
-                  <small className="warn">
-                    Still shows <b>Not installed</b> and the browser console logs <code>net::ERR_CONNECTION_REFUSED</code> for the ping? That means no recorder is listening on this machine: run the command above in a terminal — the first lines must print <code>presence endpoint on http://127.0.0.1:43117/ping</code>. If they don&apos;t, the AppImage you have is an outdated build — download it again with the button/command above and re-run it (the new launch replaces the old registration automatically).
+                  <small>
+                    Still shows <b>Not installed</b> after clicking <b>Check again</b>, and the browser console logs <code>net::ERR_CONNECTION_REFUSED</code> for the ping? That means no recorder is listening on this machine: run the command above in a terminal — the first lines must print <code>presence endpoint on http://127.0.0.1:43117/ping</code>. If they don&apos;t, the AppImage you have is an outdated build — download it again with the button/command above and re-run it (the new launch replaces the old registration automatically).
                   </small>
                 </li>
               </ol>

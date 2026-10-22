@@ -18,7 +18,22 @@ actual build configuration in `apps/recorder/package.json` and the scripts in th
 > is overwritten automatically) and, if an old instance is still holding the single-instance
 > lock while not serving `/ping`, the new build **takes over** — it terminates the stale process
 > and relaunches itself. Verify with `curl http://127.0.0.1:43117/ping` — the `version` field
-> must show the version from `apps/recorder/package.json` (current: **1.1.0**).
+> must show the version from `apps/recorder/package.json` (current: **1.2.0**).
+
+---
+
+## 0. `pnpm dev` and the recorder
+
+**The recorder never starts with the development server.** Root `pnpm dev` runs
+`turbo run dev --parallel` across the workspace, and the recorder package deliberately
+ships **no `dev` script** — so nothing Electron-related launches when you develop the
+web app / API / workers. The recorder starts only when the user has installed it and
+explicitly launches it:
+
+```bash
+pnpm --filter @ai-qa/recorder start      # from the repo root (manual dev run)
+# or: cd apps/recorder && pnpm start
+```
 
 ---
 
@@ -57,15 +72,16 @@ Key facts about the build config (`apps/recorder/package.json` → `build` secti
 ## 2. Run in development
 
 ```bash
-cd apps/recorder
-pnpm dev        # ELECTRON_DISABLE_SANDBOX=1 electron .
+pnpm --filter @ai-qa/recorder start
+# (cd apps/recorder && pnpm start works too — there is no `dev` script by design:
+#  root `pnpm dev` must never launch the recorder)
 ```
 
 What you should see within a second or two:
 
 1. A small **status window** ("Proofline Recorder is running").
 2. Terminal lines:
-   - `[recorder] Proofline Recorder 1.1.0 (pid …) starting`
+   - `[recorder] Proofline Recorder 1.2.0 (pid …) starting`
    - `[recorder] presence endpoint on http://127.0.0.1:43117/ping`
    - `[recorder] presence endpoint on http://[::1]:43117/ping`
 
@@ -74,12 +90,17 @@ Quick health check (from another terminal):
 ```bash
 curl http://127.0.0.1:43117/ping
 curl http://[::1]:43117/ping       # IPv6 loopback — must answer too
-# {"app":"proofline-recorder","version":"1.1.0","pid":12345,"running":true}
+# {"app":"proofline-recorder","version":"1.2.0","pid":12345,"running":true}
 ```
 
 The web app's setup modal **and the whole Test Cases page** probe that same `/ping` URL
-(every 2 seconds, plus once when the browser window regains focus) to detect a running
-recorder in real time. The moment the app is installed and running:
+with **exponential backoff**: the first check runs 2 seconds after the test editor opens
+(nothing fires the moment a modal opens), every unsuccessful check doubles the wait
+(4s, 8s, capped at **10 seconds** forever), and the moment a recorder answers, polling
+**stops immediately** — no further requests while it stays installed. The modal's
+**Check again** button probes on demand (user gesture), and its **Uninstall** button asks
+the running recorder to stop and remove itself over `POST /uninstall` on the same endpoint
+(no browser protocol dialog). When the app is installed and running:
 
 - "Record steps in a browser" becomes enabled (it stays disabled before that),
 - the Recorder Setup modal shows the green "Installed on this computer" check,
@@ -224,7 +245,7 @@ All recorder diagnostics go to **stdout/stderr** of the main process with an
 
 ```bash
 cd apps/recorder
-ELECTRON_ENABLE_LOGGING=1 pnpm dev
+ELECTRON_ENABLE_LOGGING=1 pnpm start
 ```
 
 `ELECTRON_ENABLE_LOGGING=1` additionally surfaces Chromium-level console/errors in the
@@ -234,13 +255,14 @@ Useful log lines and what they mean:
 
 | Log line | Meaning |
 |---|---|
-| `Proofline Recorder 1.1.0 (pid …) starting` | First line of every launch — the exact build identity; compare it with `/ping`'s `version` when several builds coexist |
+| `Proofline Recorder 1.2.0 (pid …) starting` | First line of every launch — the exact build identity; compare it with `/ping`'s `version` when several builds coexist |
 | `presence endpoint on http://127.0.0.1:43117/ping` (and the `[::1]` twin) | HTTP server up on BOTH loopback stacks (started at process start, before any window) — web app can detect the recorder |
 | `another instance is already running and serving http://127.0.0.1:43117/ping — this launch exits` | The single-instance lock is held by a healthy resident instance which keeps serving `/ping`. A normal exit, not an install failure |
 | `lock holder (pid …) is not serving port 43117 — an outdated or hung build. Taking over...` | The lock owner is NOT answering `/ping` (typical after upgrading: an old build stuck before its server start). The new build terminates it and relaunches itself — no manual `pkill` needed |
 | `presence server on …: EADDRINUSE — the resident instance keeps serving` | Another instance already owns that address (fine if that one is healthy) |
 | `presence server: [::1] not available on this machine — skipped` | The machine has no IPv6 stack; the IPv4 endpoint still serves |
 | `installed: handler=…, protocol registered, autostart enabled` | Linux self-install completed |
+| `uninstalled: registration, autostart, and app files removed` | Uninstall (web UI's Uninstall button via `POST /uninstall`, or the `proofline-recorder://uninstall` deep link) — the app quits right after |
 | `recording <sessionId> → <target>` | Recording window opened, event push started |
 | `push failed: …` | API rejected an events PUT — check token/API URL |
 | `session ended on the platform — stopping` | User pressed Stop in the web app |
@@ -251,7 +273,7 @@ Deep links arrive as argv entries, so you can launch a recording directly in dev
 
 ```bash
 cd apps/recorder
-pnpm dev -- "proofline-recorder://record?session=test-1&token=<jwt>&api=http://localhost:4000&target=https://example.com&project=<projectId>"
+pnpm start -- "proofline-recorder://record?session=test-1&token=<jwt>&api=http://localhost:4000&target=https://example.com&project=<projectId>"
 ```
 
 (All five params — session, token, api, target, project — are required or the link is
@@ -270,10 +292,10 @@ win.webContents.openDevTools({ mode: "detach" });
 
 | Symptom | Cause / fix |
 |---|---|
-| `The SUID sandbox helper binary was found, but is not configured correctly` | Dev runs can't set SUID — the `dev` script already sets `ELECTRON_DISABLE_SANDBOX=1`; don't strip it |
-| `Missing X server / DISPLAY` (SSH session) | Electron needs a desktop session; for CI use `xvfb-run -a pnpm dev` |
+| `The SUID sandbox helper binary was found, but is not configured correctly` | Dev runs can't set SUID — the `start` script already sets `ELECTRON_DISABLE_SANDBOX=1`; don't strip it |
+| `Missing X server / DISPLAY` (SSH session) | Electron needs a desktop session; for CI use `xvfb-run -a pnpm --filter @ai-qa/recorder start` |
 | Renderer crashes on NVIDIA machines | `main.js` already appends `--disable-gpu --disable-software-rasterizer` on Linux |
-| `libva error: … init failed` in the console | Harmless VA-API probe noise (see section 7) — dev runs can silence it with `LIBVA_MESSAGING_LEVEL=0 pnpm dev` |
+| `libva error: … init failed` in the console | Harmless VA-API probe noise (see section 7) — dev runs can silence it with `LIBVA_MESSAGING_LEVEL=0 pnpm start` |
 | Port 43117 already in use | `ss -ltnp | grep 43117` — kill the stale instance or keep the healthy one |
 | Events not captured on a page | Check DevTools console for injection errors; the script re-injects on every `did-finish-load` navigation |
 | Protocol handler not firing in dev | `setAsDefaultProtocolClient(PROTOCOL, process.execPath, [appPath])` registered your *dev* electron — re-run after moving the project folder |
@@ -335,7 +357,7 @@ windows and injection failures on a customer machine.
 |---|---|
 | Browser console shows **`GET http://localhost:43117/ping net::ERR_CONNECTION_REFUSED`** (button stays disabled, downloads stay enabled) | **Nothing is listening on port 43117 — the recorder is not running (or not the fixed build).** A refused connection is NOT a CORS/permission problem (those log CORS errors). In order: (1) run the AppImage from a terminal — the first lines must print `presence endpoint on http://127.0.0.1:43117/ping`; if they don't, the binary is an **outdated build** (source fixes only ship after a rebuild — see the warning at the top of this guide), so rebuild + re-download + re-run; (2) if the launch exits instantly with `another instance is already running… Taking over...`, let it finish — the new build kills the stale instance and relaunches itself; (3) if the AppImage doesn't start at all, check the FUSE row below. Verify with `ss -ltnp \| grep 43117` (must show 127.0.0.1:43117 AND [::1]:43117) and `curl http://127.0.0.1:43117/ping` |
 | `xdg-settings: not found` / `xdg-mime: not found` errors | **Fixed in the current code** — registration is pure file writes. Seeing this means the machine runs an OLD build → rebuild and redistribute |
-| Browser dialog says **"Open xdg-open?"** when clicking *Record steps in a browser* | **This is the browser's own confirmation dialog, not the recorder's code.** Chrome on Linux labels every custom-protocol launcher generically as "xdg-open" (long-standing Chromium behavior — issue 41184476); clicking **Open xdg-open** launches Proofline Recorder normally. Tick *Always allow … to open links of this type* in the dialog to skip future prompts. Firefox and GNOME resolve the real name ("Proofline Recorder") from the registration set written at install — if they still show a generic name, restart the browser after the first install so it re-reads the handler database |
+| Browser dialog says **"Open xdg-open?"** when clicking *Record steps in a browser* | **This is the browser's own confirmation dialog, not the recorder's code.** Chrome on Linux labels every custom-protocol launcher generically as "xdg-open" (long-standing Chromium behavior — issue 41184476); clicking **Open xdg-open** launches Proofline Recorder normally. Tick *Always allow … to open links of this type* in the dialog to skip future prompts. Firefox and GNOME resolve the real name ("Proofline Recorder") from the registration set written at install — if they still show a generic name, restart the browser after the first install so it re-reads the handler database. NOTE: the Recorder Setup modal's **Uninstall** button does NOT use a deep link anymore — it calls `POST /uninstall` on the presence endpoint directly, so it never triggers this dialog (a "No App Available" after Uninstall means the web app is an outdated build) |
 | `libva error: /usr/lib/…/dri/iHD_drv_video.so init failed` | **Harmless, and now silenced.** Why it appears: Chromium (not our code) probes the system's VA-API video-acceleration driver at startup by dlopen'ing the system `libva` — on machines without an Intel GPU (or with NVIDIA) the Intel driver `iHD_drv_video.so` fails to initialize and libva prints this line. It does NOT mean a missing dependency — the AppImage is fully self-contained and libva is an optional runtime probe. Current builds disable the whole VA-API stack (`--disable-accelerated-video-decode`, `--disable-features=VaapiVideoDecodeLinuxGL,VaapiVideoEncoder,VaapiIgnoreDriverChecks`) and the launcher sets `LIBVA_MESSAGING_LEVEL=0`, so the message is gone. On an old build you can ignore it, or silence it manually: `LIBVA_MESSAGING_LEVEL=0 ./ProoflineRecorder.AppImage` |
 | `dlopen(): error loading libfuse.so.2` / AppImage won't mount | Minimal distro without FUSE. Either install it (`sudo apt install libfuse2` / `dnf install fuse-libs`) or run without FUSE: `APPIMAGE_EXTRACT_AND_RUN=1 ./ProoflineRecorder.AppImage` |
 | `version 'GLIBC_2.xx' not found` | Old distro + locally-built AppImage. Use the Docker baseline build (section 3, option B) |
@@ -365,8 +387,10 @@ Include: OS + version (`cat /etc/os-release`), how the app was installed, and th
 
 | Task | Command |
 |---|---|
-| Dev run | `cd apps/recorder && pnpm dev` |
+| Dev run (never started by root `pnpm dev`) | `pnpm --filter @ai-qa/recorder start` |
 | Health probe | `curl http://127.0.0.1:43117/ping` (and `curl http://[::1]:43117/ping`) |
+| HTTP uninstall probe (what the web UI calls) | `curl -X POST http://127.0.0.1:43117/uninstall` |
+| Upload installers to S3 (`WebViewRecorder/`) | `./scripts/upload-recorder-installers.sh all\|windows\|linux\|mac` |
 | **Rebuild after changing recorder source** | `cd apps/recorder && pnpm dist --linux AppImage`, then run the fresh `dist/ProoflineRecorder.AppImage` once |
 | Linux portable build | `./apps/recorder/scripts/build-linux.sh` (Docker, glibc 2.31 floor) |
 | Linux quick build | `cd apps/recorder && pnpm dist --linux AppImage` |

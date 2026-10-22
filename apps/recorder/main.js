@@ -207,7 +207,7 @@ function handlePresenceRequest(request, response) {
   // across browsers; the fallback covers plain (non-preflight) requests.
   const requestedHeaders = request.headers["access-control-request-headers"];
   response.setHeader("Access-Control-Allow-Origin", "*");
-  response.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+  response.setHeader("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS");
   response.setHeader("Access-Control-Allow-Headers", Array.isArray(requestedHeaders) ? requestedHeaders.join(", ") : (requestedHeaders ?? "Content-Type"));
   // A public HTTPS page probing loopback passes through Chrome's Private Network
   // Access gate (older Chrome) and its Local Network Access successor (Chrome
@@ -222,6 +222,20 @@ function handlePresenceRequest(request, response) {
     return;
   }
   const requestPath = request.url.split("?")[0];
+  // Browser-friendly uninstall: the web app POSTs here instead of navigating to
+  // proofline-recorder://uninstall, which made Chrome show its "Open xdg-open?"
+  // confirmation and (with no handler registered) a "No App Available" dialog.
+  // The response is flushed BEFORE the uninstall starts — the app quits shortly
+  // after, and the browser must not see a failed request.
+  if (request.method === "POST" && requestPath === "/uninstall") {
+    response.setHeader("Content-Type", "application/json");
+    response.writeHead(200);
+    response.end(JSON.stringify({ ok: true, app: PROTOCOL, version: app.getVersion(), uninstalling: true }));
+    const run = () => { void stopAndUninstall(); };
+    if (typeof response.on === "function") response.on("finish", () => setTimeout(run, 250));
+    else setTimeout(run, 500);
+    return;
+  }
   if ((request.method === "GET" || request.method === "HEAD") && (requestPath === "/ping" || requestPath === "/")) {
     response.setHeader("Content-Type", "application/json");
     if (request.method === "HEAD") {
@@ -469,7 +483,7 @@ function handleDeepLink(link) {
   let action = "";
   try { action = new URL(link).host; } catch {}
   if (action === "uninstall") {
-    uninstallRecorder();
+    void stopAndUninstall(false);
     return;
   }
   const parsed = parseDeepLink(link);
@@ -480,9 +494,17 @@ function handleDeepLink(link) {
   startRecording(parsed).catch((error) => console.error("[recorder] start failed:", error.message));
 }
 
-/** Removes the protocol registration, autostart entry, and stable copy created by
- *  the install. Deleting the running AppImage is safe on Linux (unlink + exit). */
-function uninstallRecorder() {
+/** Stops any active recording session, then removes the protocol registration,
+ *  autostart entry, and stable copy created by the install. Deleting the running
+ *  AppImage is safe on Linux (unlink + exit). The `silent` variant (HTTP
+ *  uninstall) skips the notice window and quits fast — the web UI already shows
+ *  the outcome inline. */
+async function stopAndUninstall(silent = true) {
+  if (session && !session.ended) { try { await endSession(session, false); } catch {} }
+  uninstallRecorder(silent);
+}
+
+function uninstallRecorder(silent = false) {
   try {
     if (process.env.APPIMAGE) {
       const home = homedir();
@@ -506,8 +528,8 @@ function uninstallRecorder() {
       }
     }
     console.log("[recorder] uninstalled: registration, autostart, and app files removed");
-    showNoticeWindow("Proofline Recorder uninstalled", "Proofline Recorder has been removed from this computer. This window closes shortly.");
-    setTimeout(() => app.quit(), 6000);
+    if (!silent) showNoticeWindow("Proofline Recorder uninstalled", "Proofline Recorder has been removed from this computer. This window closes shortly.");
+    setTimeout(() => app.quit(), silent ? 800 : 6000);
   } catch (error) {
     console.error("[recorder] uninstall failed:", error.message);
   }
