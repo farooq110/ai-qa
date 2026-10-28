@@ -5,7 +5,7 @@
  * the line-number lookup regress.
  */
 import { strict as assert } from "node:assert";
-import { anchorFlowSpec, buildModules, joinCall, locateLiteral, quoteLine } from "./specs";
+import { anchorFlowSpec, buildModules, joinCall, locateLiteral, quoteLine, resolvedTemplates } from "./specs";
 import type { FlowSpecData } from "@ai-qa/contracts";
 import type { RouteInfo } from "./analyzer";
 import type { EndpointRow } from "./endpoints";
@@ -188,6 +188,20 @@ function run() {
     assert.deepEqual(spec.actions[0].form[0].options, ["Retail", "Wholesale"], "invented option dropped");
     assert.equal(spec.actions[1].submit, null, "unanchored submit label dropped");
   }
+
+  // a server message built from a template over a constant anchors to the template's line
+  const templated = new Map([
+    ["api/orders.controller.ts", '17: const collectionName = "Order";\n73:         msg: `${collectionName} Created!`,\n74:   const x = `${unknownVar} Gone`;'],
+    ["web/AddOrder.tsx", "10: <Button>Create Order</Button>"]
+  ]);
+  assert.ok(resolvedTemplates(templated).has("Order Created!"));
+  assert.ok(![...resolvedTemplates(templated).keys()].some((text) => text.includes("Gone")), "a template over an unknown variable resolves to nothing");
+  const rule = (message: string) => ({ id: "required", kind: "required", value: null, message, layer: "client" as const });
+  const orderSpec = anchorFlowSpec({ actions: [{ id: "create", name: "Create Order", kind: "form", trigger: { route: "/order", label: "Create Order", control: "button", container: "" }, submit: { label: "Create Order" }, preconditions: [], permission: null,
+    form: [{ name: "name", label: "Customer", control: "text", rules: [rule("Create Order")] }, { name: "qty", label: "Quantity", control: "number", rules: [rule("Create Order")] }],
+    calls: [], backendRules: [], effects: [{ kind: "message", entity: null, from: [], to: null, text: "Order Created!", route: null }], src: [{ file: "web/AddOrder.tsx", quote: "10: <Button>Create Order</Button>" }] }] } as never, templated).spec;
+  assert.equal(orderSpec.actions[0].effects[0]?.text, "Order Created!", "templated message kept as an effect");
+  assert.deepEqual(orderSpec.actions[0].form.map((field) => field.rules[0].id), ["required", "qty-required"], "a repeated rule id gets its field's name");
 
   console.log("anchor.check.ts: all assertions passed");
 }

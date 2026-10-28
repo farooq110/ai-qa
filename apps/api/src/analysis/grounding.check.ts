@@ -106,6 +106,30 @@ async function run() {
   assert.equal(found.get("/orders/:id"), "web/src/pages/orders/OrderDetail.tsx", "lazy() import resolved to its page file");
   assert.equal(found.get("/"), "web/src/pages/dashboard/Dashboard.tsx", "index route resolves through the wrapper element");
 
+  // a plain route array in its own file, pages behind a guard wrapper and a Loader(lazy()) barrel
+  const barrel = new Map([
+    ["web/src/pages/Employees/index.tsx", "export default function Employees(){ return null; }"],
+    ["web/src/pages/Stocks/index.tsx", "export default function Stocks(){ return null; }"],
+    ["web/src/routes/privateComponents.ts", 'import { lazy } from "react";\nexport const EmployeePage = Loader(lazy(() => import("../pages/Employees")));\nexport { default as StocksPage } from "../pages/Stocks";'],
+    ["web/src/routes/privateRoutes.tsx", `import { EmployeePage, StocksPage } from "./privateComponents";\nexport const Menu = [{ title: "Employees", path: "/employee" }];\nexport const DashboardRoutes = [{ path: "/", element: <Layout />, children: [{ path: "/employee", element: <TrialGuard allowedPaths={["/"]}><EmployeePage /></TrialGuard> }, { path: "/stocks", element: <StocksPage /> }] }];`]
+  ]);
+  const viaBarrel = new Map(reactRouterRoutes(barrel).map((hint) => [hint.pattern, hint.file]));
+  assert.equal(viaBarrel.get("/employee"), "web/src/pages/Employees/index.tsx", "route array file read; lazy barrel followed through the guard");
+  assert.equal(viaBarrel.get("/stocks"), "web/src/pages/Stocks/index.tsx", "default-as re-export followed");
+
+  // nested "export *" barrels: pages/index.ts -> pages/summary/index.ts -> summaryPage.tsx
+  const starBarrel = new Map([
+    ["src/pages/summary/summaryPage.tsx", "export const SummaryPage = () => null;"],
+    ["src/pages/summary/index.ts", 'export * from "./summaryPage"'],
+    ["src/pages/roster/rosterPage.tsx", "export function RosterPage() { return null; }"],
+    ["src/pages/roster/index.ts", 'export { RosterPage } from "./rosterPage"'],
+    ["src/pages/index.ts", 'export * from "./roster"\nexport * from "./summary"'],
+    ["src/routes/index.tsx", 'import { SummaryPage, RosterPage } from "../pages";\nconst routes = [{ path: "/summary", element: <SummaryPage /> }, { path: "/roster", element: <RosterPage /> }];\nexport const router = createBrowserRouter(routes);']
+  ]);
+  const viaStar = new Map(reactRouterRoutes(starBarrel).map((hint) => [hint.pattern, hint.file]));
+  assert.equal(viaStar.get("/summary"), "src/pages/summary/summaryPage.tsx", "export * chain followed to the defining file");
+  assert.equal(viaStar.get("/roster"), "src/pages/roster/rosterPage.tsx", "named re-export inside an export * chain followed");
+
   // assertResponse: list finding, call matching, rules
   assert.equal(findList({ data: { items: [{ id: 1 }] }, errors: [] })?.path, "data.items");
   assert.equal(findList({ errors: [], meta: {} }), null, "an empty non-list array is not the list");

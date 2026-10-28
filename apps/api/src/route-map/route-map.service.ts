@@ -1,3 +1,4 @@
+import { firstFixtures, type RouteFixtures } from "@ai-qa/test-dsl";
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { PERMISSIONS } from "@ai-qa/domain";
 import { PrismaService } from "../database/prisma.service";
@@ -23,7 +24,7 @@ export class RouteMapService {
       this.prisma.projectRoute.findMany({ where: { projectId }, omit: { inventory: true }, orderBy: [{ navOrder: "asc" }, { pattern: "asc" }] }),
       this.prisma.environmentProfile.findFirst({ where: { projectId }, orderBy: [{ isDefault: "desc" }, { name: "asc" }] })
     ]);
-    const fixtures = (environment?.routeFixtures ?? {}) as Record<string, Record<string, string>>;
+    const fixtures = firstFixtures(environment?.routeFixtures);
     return { routes: rows.map((row) => ({ ...row, fixture: fixtures[row.pattern] ?? null })), environment: environment ? { id: environment.id, name: environment.name } : null };
   }
 
@@ -46,9 +47,12 @@ export class RouteMapService {
     if (input.fixture !== undefined) {
       const environment = await this.prisma.environmentProfile.findFirst({ where: { projectId }, orderBy: [{ isDefault: "desc" }, { name: "asc" }] });
       if (!environment) throw new BadRequestException("Add an environment first: parameter values are stored per environment.");
-      const fixtures = { ...((environment.routeFixtures ?? {}) as Record<string, Record<string, string>>) };
-      if (input.fixture === null) delete fixtures[row.pattern];
-      else fixtures[row.pattern] = Object.fromEntries(Object.entries(input.fixture).map(([name, value]) => [name, String(value)]));
+      const fixtures = { ...((environment.routeFixtures ?? {}) as RouteFixtures) };
+      const values = input.fixture && Object.fromEntries(Object.entries(input.fixture).map(([name, value]) => [name, String(value)]));
+      const current = fixtures[row.pattern];
+      if (!values) delete fixtures[row.pattern];
+      // Editing the values here edits the first set; the rest of a list (other models) is kept.
+      else fixtures[row.pattern] = Array.isArray(current) && current.length > 1 ? [values, ...current.slice(1)] : values;
       await this.prisma.environmentProfile.update({ where: { id: environment.id }, data: { routeFixtures: fixtures as never } });
     }
     return this.prisma.projectRoute.update({

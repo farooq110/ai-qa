@@ -5,7 +5,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { useSearchParams } from "next/navigation";
 import {
   Archive, ArrowDown, ArrowUp, Ban, Check, ChevronDown, CircleHelp, Columns3, Crosshair, Download, FilePlus2, FolderKanban, GripVertical, Layers, LayoutList, Pencil, PlayCircle,
-  Lock, Plus, RotateCcw, Search, SlidersHorizontal, Sparkles, Tag, ThumbsUp, Trash2, X, Network, CircleDot
+  Lock, Plus, RotateCcw, RotateCw, Search, SlidersHorizontal, Sparkles, Tag, ThumbsUp, Trash2, X, Network, CircleDot
 } from "lucide-react";
 import { RecorderSetupModal } from "@/components/recorder-setup-modal";
 import { BitbucketIcon, GithubIcon, GitlabIcon } from "@/components/brand-icons";
@@ -18,18 +18,27 @@ import { InfoTooltip } from "@/components/info-tooltip";
 import { useFitViewport } from "@/components/use-fit-viewport";
 import { api, apiUrl, categoryLabels, fmtRelative, shortSha, statusClass, statusLabels } from "@/lib/api";
 import { can, requireSubscription, useMe, useProjects, useToast } from "@/lib/hooks";
-import { clearRecorderInstalledFlag, persistRecorderInstalled, readRecorderInstalledFlag, useRecorderPresence } from "@/lib/use-recorder-presence";
+import { clearRecorderInstalledFlag, launchRecorder, persistRecorderInstalled, readRecorderInstalledFlag, useRecorderPresence } from "@/lib/use-recorder-presence";
 import { PERMISSIONS } from "@ai-qa/domain";
 
 /**
- * Hands the proofline-recorder:// link to the OS. Only ever called from a direct user
- * click (start button, retry, picker) so the browser allows the external navigation;
- * when the recorder isn't installed the OS shows its own dialog and the inline setup
- * help appears in the record bar instead.
+ * Hands the recording session to the recorder. Preferred path: a loopback POST
+ * straight to the RUNNING recorder (Electron's own Chromium window opens — no
+ * external browser, no OS protocol handler, no "Open xdg-open?" confirmation on
+ * Linux). Only when no recorder answers (not running, or an old build without
+ * the /record endpoint) does it fall back to the proofline-recorder:// deep
+ * link. Always user-gesture driven (start button, retry, picker).
  */
-function launchDeepLink(link: string) {
-  window.location.href = link;
+async function launchDeepLink(link: string) {
+  const launched = await launchRecorder(link);
+  if (!launched) window.location.href = link;
 }
+
+/** Recording-session status poll interval. The poller is a self-scheduling
+ *  timer chain that never overlaps requests, so this is a steady ONE request
+ *  every 5 seconds — slow enough to keep the API (and the browser tab) calm,
+ *  fast enough for the "N steps captured" counter to feel live. */
+const RECORDING_POLL_INTERVAL_MS = 5000;
 
 interface StepDto { action: string; target: string; value?: string; condition?: string; region?: { x: number; y: number; w: number; h: number }; tolerance?: number }
 interface DefinitionDto { capability?: string; category?: string; preconditions?: string[]; steps?: StepDto[]; expectedResult?: string }
@@ -836,28 +845,83 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
   const [recorderInstalled, setRecorderInstalled] = useState(false);
   const [recordingStarting, setRecordingStarting] = useState(false);
   const [regionPicker, setRegionPicker] = useState<{ index: number } | null>(null);
+  // Recording-session status poller: a self-scheduling timer chain (NEVER
+  // setInterval — an async setInterval callback overlaps and stacks requests
+  // whenever the API answers slower than the tick) that is fully torn down when
+  // the modal closes, when a new session replaces the old one, and when a session
+  // ends. `pollEpoch` invalidates in-flight responses from superseded sessions.
+  const pollEpoch = useRef(0);
+  const pollTimer = useRef<number | null>(null);
 
   useEffect(() => {
     setRecorderInstalled(readRecorderInstalledFlag());
   }, []);
 
-  // Real-time recorder detection, page-wide: probes the recorder's local presence
-  // endpoint (/ping on 127.0.0.1:43117) immediately, every 2 seconds, and on window
-  // focus. The moment the recorder is installed and running — with no recording
-  // started and no recorder window opened — the flag flips, which enables the
-  // "Record steps in a browser" button and (through recorderInstalled) the setup
-  // modal's green check + disabled downloads.
+  // Real-time recorder detection, page-wide — ONE request at a time: after the
+  // test editor opens, the recorder's local presence endpoint (/ping on
+  // 127.0.0.1:43117) is first checked after 2 seconds — nothing fires the moment
+  // the modal opens — and every check is EXACTLY ONE request (loopback spellings
+  // rotate across attempts). Every unsuccessful check doubles the wait (4s, 8s,
+  // capped at 10s). At most 10 automatic attempts run per cycle: the moment the
+  // recorder is detected the poller STOPS immediately, and after 10 misses it
+  // stops too — the "Check for recorder" button restarts it (one immediate check
+  // plus a fresh cycle) whenever the user wants. `reset` backs the Uninstall flow
+  // (stops the pings entirely and clears the detected state, which disables
+  // "Record steps in a browser").
   const handleRecorderDetected = useCallback(() => {
     // The live presence probe found the app running — persist the flag so the
     // installed state survives reloads even if the app is quit later.
     persistRecorderInstalled();
     setRecorderInstalled(true);
   }, []);
-  const { detected: recorderLive } = useRecorderPresence(handleRecorderDetected);
+  const {
+    detected: recorderLive,
+    version: recorderVersion,
+    checking: recorderChecking,
+    exhausted: recorderExhausted,
+    refresh: refreshRecorderNow,
+    reset: resetRecorderPresence
+  } = useRecorderPresence(handleRecorderDetected);
   // The record button is enabled when the recorder is running right now (live
   // probe) or was detected before on this machine (sticky flag). Otherwise it
   // stays disabled — use the Recorder Setup button next to it to install first.
   const canRecord = recorderLive || recorderInstalled;
+
+  /** Tear the session poller down: called when a session ends, when a new
+   *  session replaces the old one, and when the editor modal unmounts (the old
+   *  setInterval kept polling forever in the background after the modal was
+   *  closed — stacking a new poller on every "Record" click). */
+  function stopSessionPolling() {
+    pollEpoch.current += 1;
+    if (pollTimer.current !== null) {
+      window.clearTimeout(pollTimer.current);
+      pollTimer.current = null;
+    }
+  }
+
+  useEffect(() => stopSessionPolling, []);
+
+  /** Session status poller — a self-scheduling timer chain, 5 seconds between
+   *  requests: the next request is only armed AFTER the previous response (or
+   *  error) settles, so requests never overlap and never stack, no matter how
+   *  slow the API is. `epoch` discards responses from a superseded session.
+   *  Stops when the session reports "stopped" or the API call fails. */
+  async function pollRecordingSession(sessionId: string, epoch: number) {
+    try {
+      const data = await api<{ count: number; status: "awaiting-client" | "recording" | "stopped" }>(`/v1/projects/${projectId}/recordings/${sessionId}`);
+      if (epoch !== pollEpoch.current) return; // superseded — a newer session or a teardown
+      setRecording((current) => (current?.sessionId === sessionId ? { ...current, count: data.count, status: data.status } : current));
+      if (data.status === "recording") {
+        // A successful attach marks the one-time setup as done on this machine.
+        persistRecorderInstalled();
+        setRecorderInstalled(true);
+      }
+      if (data.status === "stopped") { pollTimer.current = null; return; } // session over — end the chain
+      pollTimer.current = window.setTimeout(() => { void pollRecordingSession(sessionId, epoch); }, RECORDING_POLL_INTERVAL_MS);
+    } catch {
+      pollTimer.current = null; // API error — stop polling this session
+    }
+  }
 
   async function startRecording() {
     if (recordingStarting || recording) return;
@@ -868,22 +932,15 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
       const env = envs.find((e) => e.isDefault) ?? envs[0];
       if (!env) { onError("Add an environment first - the recorder needs your app URL."); return; }
       const result = await api<{ sessionId: string; deepLink: string; status: "awaiting-client" | "recording" }>(`/v1/projects/${projectId}/recordings`, { method: "POST", body: { url: env.url, apiUrl } });
+      stopSessionPolling(); // retire any previous session's poller before starting ours
+      const epoch = pollEpoch.current;
       setRecording({ sessionId: result.sessionId, deepLink: result.deepLink, status: result.status, count: 0 });
       // The old one-click workflow: open the recorder immediately. Setup help is never
       // auto-shown — the Recorder Setup button inside the Steps box opens it on demand.
-      launchDeepLink(result.deepLink);
-      const poll = window.setInterval(async () => {
-        try {
-          const data = await api<{ count: number; status: "awaiting-client" | "recording" | "stopped" }>(`/v1/projects/${projectId}/recordings/${result.sessionId}`);
-          setRecording((current) => (current ? { ...current, count: data.count, status: data.status } : current));
-          if (data.status === "recording") {
-            // A successful attach marks the one-time setup as done on this machine.
-            persistRecorderInstalled();
-            setRecorderInstalled(true);
-          }
-          if (data.status === "stopped") window.clearInterval(poll);
-        } catch { window.clearInterval(poll); }
-      }, 1500);
+      void launchDeepLink(result.deepLink);
+      // First status check after one full interval, then one every 5s (never
+      // overlapping — see pollRecordingSession).
+      pollTimer.current = window.setTimeout(() => { void pollRecordingSession(result.sessionId, epoch); }, RECORDING_POLL_INTERVAL_MS);
     } catch (error) {
       onError(error instanceof Error ? error.message : "Unable to start the recorder");
     } finally {
@@ -893,6 +950,7 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
 
   async function stopRecording() {
     if (!recording) return;
+    stopSessionPolling();
     try {
       const result = await api<{ events: Array<{ action: string; target: string; value?: string }> }>(`/v1/projects/${projectId}/recordings/${recording.sessionId}/stop`, { method: "POST" });
       const imported = result.events
@@ -1075,6 +1133,20 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
             <legend>Steps</legend>
             <div className="record-bar">
               <button type="button" className="mini-button" onClick={() => setSetupModalOpen(true)} title="Recorder setup — open, install, and instructions"><Download size={13} />Recorder Setup</button>
+              {!recorderLive && (
+                <button
+                  type="button"
+                  className="mini-button"
+                  disabled={recorderChecking}
+                  onClick={() => void refreshRecorderNow()}
+                  title={recorderExhausted
+                    ? "Automatic checks are paused after 10 attempts — click to check for the recorder now and restart them"
+                    : "Check immediately whether the Proofline Recorder is installed — also restarts the automatic checks"}
+                >
+                  <RotateCw size={12} className={recorderChecking ? "spin" : undefined} />
+                  {recorderChecking ? "Checking…" : "Check for recorder"}
+                </button>
+              )}
               {!recording ? (
                 <>
                   <button
@@ -1086,7 +1158,11 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
                   >
                     <CircleDot size={14} /> {recordingStarting ? "Opening..." : "Record steps in a browser"}
                   </button>
-                  {!canRecord && <small className="record-hint">The button unlocks automatically as soon as the Proofline Recorder is installed and running on this computer — click “Recorder Setup” to get it.</small>}
+                  {!canRecord && (
+                    <small className="record-hint">
+                      The button unlocks as soon as the Proofline Recorder is installed and running — click “Recorder Setup” to get it, then “Check for recorder” to verify. Automatic checks stop after 10 attempts; every click restarts them.
+                    </small>
+                  )}
                   <small className="record-hint">Opens your app in the Proofline Recorder desktop app - click through the flow and every action is captured as a step. Passwords are masked as {'{{password}}'}.</small>
                 </>
               ) : (
@@ -1200,14 +1276,21 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
         <RecorderSetupModal
           apiUrl={apiUrl}
           installed={recorderInstalled}
+          running={recorderLive}
+          serverVersion={recorderVersion}
           deepLink={recording?.deepLink ?? null}
+          probing={recorderChecking}
           onClose={() => setSetupModalOpen(false)}
           onLaunch={launchDeepLink}
           onUninstall={() => {
+            // Uninstall done: clear the sticky flag, reset the live detection, and
+            // stop the ping requests — downloads flip back on and "Record steps in
+            // a browser" disables until the recorder is installed again.
             clearRecorderInstalledFlag();
             setRecorderInstalled(false);
+            resetRecorderPresence();
           }}
-          onDetected={handleRecorderDetected}
+          onProbeNow={refreshRecorderNow}
         />
       )}
     </div>
@@ -1241,7 +1324,7 @@ function RegionPickerModal({ projectId, onApply, onClose, onError }: {
       const result = await api<{ sessionId: string; deepLink: string }>(`/v1/projects/${projectId}/recordings`, { method: "POST", body: { url: env.url, apiUrl } });
       setSession(result.sessionId);
       // The screenshot comes from the Proofline Recorder desktop app — open it for this session.
-      launchDeepLink(result.deepLink);
+      void launchDeepLink(result.deepLink);
       await refresh(result.sessionId);
     } catch (error) {
       onError(error instanceof Error ? error.message : "Unable to open the picker browser");

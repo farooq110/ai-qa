@@ -1,11 +1,10 @@
 {
   "name": "@ai-qa/recorder",
-  "version": "1.1.0",
+  "version": "1.4.2",
   "private": true,
   "description": "Proofline Recorder — desktop companion that opens the target app and records manual test steps.",
   "main": "main.js",
   "scripts": {
-    "dev": "ELECTRON_DISABLE_SANDBOX=1 electron .",
     "start": "ELECTRON_DISABLE_SANDBOX=1 electron .",
     "dist": "electron-builder"
   },

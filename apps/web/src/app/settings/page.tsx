@@ -14,7 +14,7 @@ import { can, requireSubscription, useMe, useProjects, useToast, type MePayload 
 import { PersonalSettings } from "./personal-settings";
 import { PERMISSIONS } from "@ai-qa/domain";
 
-interface EnvironmentDto { id: string; name: string; url: string; isDefault: boolean; hasCredentials?: boolean; loginUrl?: string | null; routeFixtures?: Record<string, Record<string, string>> }
+interface EnvironmentDto { id: string; name: string; url: string; isDefault: boolean; hasCredentials?: boolean; loginUrl?: string | null; routeFixtures?: Record<string, Record<string, string> | Array<Record<string, string>>> }
 interface ConnectionDto { id: string; provider: string; baseUrl: string; accountLogin: string; createdAt: string; updatedAt: string }
 interface GitlabInstanceDto { baseUrl: string | null; clientId: string | null; redirectUri: string }
 
@@ -76,7 +76,7 @@ function OrganizationSettings({ me, notify }: { me: MePayload | null; notify: No
   const [newEnvironment, setNewEnvironment] = useState<{ name: string; url: string }>({ name: "", url: "" });
   const [showAuth, setShowAuth] = useState(false);
   const [fixtureDraft, setFixtureDraft] = useState<Record<string, string>>({});
-  const [auth, setAuth] = useState<{ loginUrl: string; username: string; password: string }>({ loginUrl: "", username: "", password: "" });
+  const [auth, setAuth] = useState<{ loginUrl: string; loginTrigger: string; username: string; password: string }>({ loginUrl: "", loginTrigger: "", username: "", password: "" });
   const [connections, setConnections] = useState<ConnectionDto[] | null>(null);
   const [gitlabInstance, setGitlabInstance] = useState<GitlabInstanceDto | null>(null);
   const [configuringGitlab, setConfiguringGitlab] = useState(false);
@@ -280,9 +280,9 @@ function OrganizationSettings({ me, notify }: { me: MePayload | null; notify: No
                       spellCheck={false}
                       value={fixtureDraft[environment.id] ?? JSON.stringify(environment.routeFixtures ?? {}, null, 2)}
                       onChange={(event) => setFixtureDraft({ ...fixtureDraft, [environment.id]: event.target.value })}
-                      placeholder={'{\n  "/customiser": { "modelCode": "TSHIRT-01", "projectId": "abc123" }\n}'}
+                      placeholder={'{\n  "/orders/:id": { "id": "1042" },\n  "/customizer": [\n    { "projectId": "193", "modelCode": "112" },\n    { "projectId": "193", "modelCode": "168" }\n  ]\n}'}
                     />
-                    <small className="dim">Route → real parameter values that exist in this environment. Tests open the page with {'{{name}}'} placeholders filled from here. Use {'{}'} for a route that needs no values. Analyze again after changing.</small>
+                    <small className="dim">Route → real parameter values that exist in this environment. Tests open the page with {'{{name}}'} placeholders filled from here. Give a route a list of value sets (one per product, model or account) to run its tests once per set; analysis and generation use the first set. Use {'{}'} for a route that needs no values. Analyze again after changing.</small>
                     <button className="secondary-button" disabled={!isAdmin || busy !== null || fixtureDraft[environment.id] === undefined} onClick={() => {
                       let parsed: unknown;
                       try { parsed = JSON.parse(fixtureDraft[environment.id] ?? "{}"); } catch { notify("Parameter values must be valid JSON", "error"); return; }
@@ -303,22 +303,24 @@ function OrganizationSettings({ me, notify }: { me: MePayload | null; notify: No
                   ...newEnvironment,
                   ...(auth.loginUrl.trim() || auth.username.trim() || auth.password.trim() ? {
                     loginUrl: auth.loginUrl,
+                    loginTrigger: auth.loginTrigger,
                     username: auth.username,
                     password: auth.password
                   } : {})
                 };
                 void act("add-env", () => api(`/v1/projects/${envProjectId2}/environments`, { method: "POST", body: payload }), "Environment added.");
                 setNewEnvironment({ name: "", url: "" });
-                setAuth({ loginUrl: "", username: "", password: "" });
+                setAuth({ loginUrl: "", loginTrigger: "", username: "", password: "" });
               }} disabled={!isAdmin || busy !== null || !newEnvironment.name.trim() || !newEnvironment.url.trim()}><Plus size={14} />Add environment</button>
             </div>
             {newEnvironment.name.trim() && newEnvironment.url.trim() && (
               <details className="env-auth-config">
                 <summary>Optional: login credentials for authenticated testing</summary>
                 <div className="env-auth-grid">
-                  <label>Login URL <span className="optional-tag">optional</span><input value={auth.loginUrl} onChange={(event) => setAuth({ ...auth, loginUrl: event.target.value })} placeholder={newEnvironment.url} /><small className="field-hint">Leave empty if the app shows a login popup/modal on the site itself — the runner will trigger it automatically.</small></label>
+                  <label>Login URL (optional)<input value={auth.loginUrl} onChange={(event) => setAuth({ ...auth, loginUrl: event.target.value })} placeholder={newEnvironment.url} /><small className="field-hint">Leave empty if the app shows a login popup/modal on the site itself — the runner will trigger it automatically.</small></label>
                   <label>Username<input value={auth.username} onChange={(event) => setAuth({ ...auth, username: event.target.value })} autoComplete="off" placeholder="qa-bot@example.com" /></label>
                   <label>Password<input type="password" value={auth.password} onChange={(event) => setAuth({ ...auth, password: event.target.value })} autoComplete="new-password" placeholder="store encrypted" /></label>
+                  <label>Login button (optional)<input value={auth.loginTrigger} onChange={(event) => setAuth({ ...auth, loginTrigger: event.target.value })} placeholder="Sign in" /><small className="field-hint">Text of the button that opens the login popup, when it is not "Log in" or "Sign in" (e.g. "Product Rack").</small></label>
                   <small className="dim">Stored encrypted. In test steps, reference them as {'{{username}}'} and {'{{password}}'} — the runner logs in once per run and reuses the session for every test.</small>
                 </div>
               </details>

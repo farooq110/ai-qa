@@ -117,7 +117,7 @@ export function ImportRepositoryModal({ canConnect, onClose, onImported }: {
             <label>Root directory (optional)
             <input name="rootDirectory" placeholder="apps/web" autoComplete="off" /></label>
           </div>
-          <small className="field-hint">Set a root directory to import one app from a monorepo. You can import the same repository again with a different root.</small>
+          <small className="field-hint">Set a root directory to import one app from a monorepo. Repositories already imported into this organization no longer appear in the list.</small>
           <label>Backend directories (optional)
           <input name="backendDirectories" placeholder="api, services/orders" autoComplete="off" /></label>
           <small className="field-hint">Folders holding this app's backend, comma-separated. Analysis reads them for API endpoints and server-side rules, so tests can cover validation and business-rule errors.</small>

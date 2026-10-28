@@ -5,7 +5,7 @@
  */
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
-import type { LoginCredentials, SessionStore } from "@ai-qa/test-dsl";
+import { firstFixtures, type LoginCredentials, type RouteFixtures, type SessionStore } from "@ai-qa/test-dsl";
 
 const key = () => createHash("sha256").update(process.env.JWT_SECRET ?? "").digest();
 
@@ -82,8 +82,18 @@ export async function loadFixtureVars(prisma: PrismaClient, projectId: string, e
   const vars = new Map<string, string>();
   try {
     const environment = await findEnvironment(prisma, projectId, environmentUrl);
-    const fixtures = (environment?.routeFixtures ?? {}) as Record<string, Record<string, string>>;
+    // A route with a list of sets contributes its first; executions swap in each set (testVariants).
+    const fixtures = firstFixtures(environment?.routeFixtures);
     for (const params of Object.values(fixtures)) for (const [name, value] of Object.entries(params)) vars.set(name, String(value));
   } catch { /* fixtures are optional */ }
   return vars;
+}
+
+/** The environment's route parameter values as saved (a route may hold a list of sets). */
+export async function loadRouteFixtures(prisma: PrismaClient, projectId: string, environmentUrl: string): Promise<RouteFixtures> {
+  try {
+    return ((await findEnvironment(prisma, projectId, environmentUrl))?.routeFixtures ?? {}) as RouteFixtures;
+  } catch {
+    return {};
+  }
 }

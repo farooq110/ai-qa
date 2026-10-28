@@ -14,9 +14,12 @@ import { PERMISSIONS } from "@ai-qa/domain";
 /** Public (no auth — plain <a href> downloads can't send headers): installer binaries.
  *
  *  Production (S3):  set AWS_S3_BUCKET_NAME (+ optionally AWS_S3_REGION) in .env and upload
- *    with `node scripts/upload-installer.js linux|windows|mac|all`. Each download request
- *    generates a short-lived presigned GET URL and redirects the browser to it — objects stay
- *    private, no bucket policy or ACL changes needed.
+ *    with `./scripts/upload-recorder-installers.sh all` (or `node scripts/upload-installer.mjs
+ *    linux|windows|mac|all`). Each download request generates a short-lived presigned GET
+ *    URL and redirects the browser to it — objects stay private, no bucket policy or ACL
+ *    changes needed. The Recorder Setup modal's per-platform download buttons and curl
+ *    commands all go through this route, so they always serve the exact file uploaded to
+ *    the bucket's WebViewRecorder/ folder.
  *
  *  Local dev / self-hosted without S3: leave AWS_S3_BUCKET_NAME unset; files are streamed
  *    from apps/recorder/dist (or RECORDER_INSTALLER_DIR if set). */
@@ -25,6 +28,10 @@ const INSTALLER_FILES: Record<string, string> = {
   mac:     "ProoflineRecorder.dmg",
   linux:   "ProoflineRecorder.AppImage",
 };
+
+/** S3 folder the upload script (scripts/upload-installer.mjs) pushes installers to —
+ *  keep in sync with S3_FOLDER in that script. */
+const S3_INSTALLER_PREFIX = "WebViewRecorder";
 
 /** Lazy singleton — only created when S3 env vars are present. */
 let s3: S3Client | null = null;
@@ -55,7 +62,7 @@ export class RecorderInstallerController {
     if (bucket) {
       const cmd = new GetObjectCommand({
         Bucket: bucket,
-        Key: `installers/${file}`,
+        Key: `${S3_INSTALLER_PREFIX}/${file}`,
         ResponseContentDisposition: `attachment; filename="${file}"`,
       });
       const url = await getSignedUrl(getS3(), cmd, { expiresIn: 300 }); // 5 min

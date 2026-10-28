@@ -1,3 +1,4 @@
+import type { RouteFixtures } from "@ai-qa/test-dsl";
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../database/prisma.service";
@@ -12,7 +13,7 @@ interface CredentialInput {
   submitSelector?: string;
   username?: string;
   password?: string;
-  routeFixtures?: Record<string, Record<string, string>> | null;
+  routeFixtures?: RouteFixtures | null;
 }
 
 @Injectable()
@@ -121,7 +122,7 @@ export class EnvironmentsService {
       isDefault: environment.isDefault,
       loginUrl: environment.loginUrl,
       hasCredentials: Boolean(environment.usernameEnc && environment.passwordEnc),
-      routeFixtures: (environment.routeFixtures ?? {}) as Record<string, Record<string, string>>
+      routeFixtures: (environment.routeFixtures ?? {}) as RouteFixtures
     };
   }
 

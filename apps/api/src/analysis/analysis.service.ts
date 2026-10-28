@@ -2,6 +2,7 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { PrismaService } from "../database/prisma.service";
 import { RepositoryConnectionsService, githubHeaders, providerLabel } from "../repository-connections/repository-connections.service";
 import type { AuthenticatedUser } from "../auth/auth.types";
+import { linkPagesToCode, type LinkCoverage } from "./page-linker";
 import { extractRoutes, extractRouteParams, prioritizePaths, buildImportGraph, reachableFromRoutes, extractComponentNames, featureName, aliasRules, importNeighborhood, type RouteInfo } from "../analysis/analyzer";
 import { dedupeSharedControls, discoveryAuth, type DiscoveredPage } from "../analysis/live-discovery";
 import { crawlApp, type CrawledRoute } from "../analysis/crawler";
@@ -95,17 +96,91 @@ export class AnalysisService {
       const withParams = extractRouteParams(merged, sources, graph);
       // Each route also carries its page file's near import neighborhood: what generation reads as
       // that page's code context (summarizeCodebase is keyed by real file path, see code-context.ts).
-      const routes = withParams.map((route) => (route.file ? { ...route, files: importNeighborhood(route.file, sources, graph) } : route));
-      const reachableFiles = reachableFromRoutes(routes, sources, graph);
-      const reachableComponents = extractComponentNames(sources, reachableFiles);
+      const routerRoutes = withParams.map((route) => (route.file ? { ...route, files: importNeighborhood(route.file, sources, graph) } : route));
+      // What the route readers found, plus every crawled page they could not tie to a file: those are
+      // linked by the text the page shows (page-linker.ts), whatever routing style the app uses.
+      let routes = routerRoutes;
+      let linkCoverage: LinkCoverage | undefined;
 
       const packageJson = sources.get("package.json");
       const framework = packageJson?.includes('"react"') ? "React" : "Unknown";
       const language = codePaths.some((path) => path.endsWith(".tsx")) ? "TypeScript" : "JavaScript";
 
-      // C. Deep code context: AST summaries of reachable components (handlers,
-      // rendered elements, API calls, state). Compact per-component records. Synchronous CPU work,
-      // so it costs nothing to run before the crawl/specs stages below start.
+      // B. Live crawl: the running app decides which pages exist (framework independent).
+      // D. Backend endpoint discovery runs concurrently with it; the flow specs wait for the crawl,
+      // because which source file each page lives in is settled by what the crawl saw.
+      const runCrawl = async () => {
+        const environment = await this.prisma.environmentProfile.findFirst({ where: { projectId }, orderBy: [{ isDefault: "desc" }, { name: "asc" }] });
+        let discoveredPages: DiscoveredPage[] = [];
+        let discoveryError: string | undefined;
+        let loginStatus: "none" | "ok" | "failed" = "none";
+        let routeSummary: { total: number; verified: number; budgetHit: boolean } | undefined;
+        let crawlApiCalls: string[] = [];
+        if (environment?.url) {
+          const auth = discoveryAuth(environment);
+          const known = await this.prisma.projectRoute.findMany({ where: { projectId, excluded: false }, select: { pattern: true } });
+          const hints = [...new Set([
+            ...routerRoutes.map((route) => route.path).filter((path) => path && !path.includes("*")).map((path) => (path.startsWith("/") ? path : `/${path}`)),
+            ...known.map((route) => route.pattern),
+            ...Object.keys(auth.fixtures ?? {})
+          ])];
+          const crawl = await crawlApp(environment.url.replace(/\/$/, ""), { auth, hints, sessionState: loadSessionState(environment), sessionStore: sessionStore(this.prisma, environment.id) });
+          loginStatus = crawl.login;
+          discoveredPages = crawl.routes.flatMap((route) => (route.page ? [route.page] : []));
+          dedupeSharedControls(discoveredPages);
+          discoveryError = loginStatus === "failed"
+            ? `Login failed${crawl.loginRateLimited ? " (the app rate-limited it, HTTP 429; wait a few minutes)" : ""} with the saved credentials for environment "${environment.name}". Check the username, password, login URL and login trigger in Settings, then analyze again.`
+            : crawl.routes.some((route) => route.verified) ? undefined : (crawl.error ?? "no pages could be crawled");
+          routeSummary = { total: crawl.routes.length, verified: crawl.routes.filter((route) => route.verified).length, budgetHit: Boolean(crawl.budgetHit) };
+          crawlApiCalls = crawl.routes.flatMap((route) => route.apiCalls ?? []);
+          if (loginStatus === "failed") {
+            // Never replace a good logged-in crawl with a logged-out one: keep the last pages that were not gated.
+            const previous = await this.prisma.analysisRun.findFirst({ where: { projectId, status: "COMPLETED" }, orderBy: { completedAt: "desc" } });
+            const kept = ((previous?.knowledgeModel as { discoveredPages?: DiscoveredPage[] } | null)?.discoveredPages ?? []).filter((entry) => !entry.authGated);
+            if (kept.length) discoveredPages = kept;
+          }
+          const linked = linkPagesToCode(discoveredPages, routerRoutes, sources, graph, areas);
+          routes = linked.routes;
+          linkCoverage = linked.coverage;
+          await this.saveRouteMap(projectId, crawl.routes, routes, loginStatus === "failed");
+        } else {
+          // No app to crawl yet: the Route Map still lists what the code declares, as not yet opened.
+          await this.saveRouteMap(projectId, [], routes, false);
+        }
+        return { discoveredPages, discoveryError, loginStatus, routeSummary, crawlApiCalls };
+      };
+
+      const runEndpoints = async (): Promise<EndpointRow[]> => {
+        try {
+          const backendSources = new Map([...sources].filter(([path]) => areas.get(path) === "backend"));
+          return await discoverEndpoints(this.prisma, provider.impl, projectId, project.organizationId, backendSources, graph);
+        } catch (endpointError) {
+          console.warn(`Endpoint discovery skipped: ${endpointError instanceof Error ? endpointError.message : endpointError}`);
+          return [];
+        }
+      };
+
+      const runSpecs = async (endpoints: EndpointRow[]): Promise<FlowSpecResult[]> => {
+        try {
+          await this.prisma.analysisRun.update({ where: { id: analysisId }, data: { progress: { stage: "specs", modulesPlanned: buildModules(routes, endpoints).length, modulesDone: 0 } as never } }).catch(() => undefined);
+          return await buildFlowSpecs(this.prisma, provider.impl, projectId, analysisId, routes, endpoints, sources, graph, provider.model, (done, total) => {
+            this.prisma.analysisRun.update({ where: { id: analysisId }, data: { progress: { stage: "specs", modulesPlanned: total, modulesDone: done } as never } }).catch(() => undefined);
+          });
+        } catch (specError) {
+          console.warn(`Flow specs skipped: ${specError instanceof Error ? specError.message : specError}`);
+          return [];
+        }
+      };
+
+      const [{ discoveredPages: rawDiscoveredPages, discoveryError, loginStatus, routeSummary, crawlApiCalls }, discoveredEndpoints] = await Promise.all([runCrawl(), runEndpoints()]);
+      const flowSpecs = await runSpecs(discoveredEndpoints);
+      let discoveredPages = rawDiscoveredPages;
+
+      // C. Deep code context: AST summaries of the components reachable from the routes (handlers,
+      // rendered elements, API calls, state). Computed here, not before the crawl, so it includes pages
+      // the crawl linked to their code by text.
+      const reachableFiles = reachableFromRoutes(routes, sources, graph);
+      const reachableComponents = extractComponentNames(sources, reachableFiles);
       const reachableSourceFiles = new Map<string, string>();
       const reachableNameSet = new Set(reachableComponents);
       for (const path of reachableFiles) {
@@ -121,64 +196,6 @@ export class AnalysisService {
       } catch (contextError) {
         console.warn(`Code-context extraction skipped: ${contextError instanceof Error ? contextError.message : contextError}`);
       }
-
-      // B. Live crawl: the running app decides which pages exist (framework independent).
-      // D. Backend endpoint discovery + flow specs: neither depends on the crawl, so this and B run
-      // concurrently - the spec stage's LLM calls overlap the crawl's wall-clock time instead of
-      // waiting behind it.
-      const runCrawl = async () => {
-        const environment = await this.prisma.environmentProfile.findFirst({ where: { projectId }, orderBy: [{ isDefault: "desc" }, { name: "asc" }] });
-        let discoveredPages: DiscoveredPage[] = [];
-        let discoveryError: string | undefined;
-        let loginStatus: "none" | "ok" | "failed" = "none";
-        let routeSummary: { total: number; verified: number; budgetHit: boolean } | undefined;
-        let crawlApiCalls: string[] = [];
-        if (environment?.url) {
-          const auth = discoveryAuth(environment);
-          const known = await this.prisma.projectRoute.findMany({ where: { projectId, excluded: false }, select: { pattern: true } });
-          const hints = [...new Set([
-            ...routes.map((route) => route.path).filter((path) => path && path !== "*").map((path) => (path.startsWith("/") ? path : `/${path}`)),
-            ...known.map((route) => route.pattern),
-            ...Object.keys(auth.fixtures ?? {})
-          ])];
-          const crawl = await crawlApp(environment.url.replace(/\/$/, ""), { auth, hints, sessionState: loadSessionState(environment), sessionStore: sessionStore(this.prisma, environment.id) });
-          loginStatus = crawl.login;
-          discoveredPages = crawl.routes.flatMap((route) => (route.page ? [route.page] : []));
-          dedupeSharedControls(discoveredPages);
-          discoveryError = loginStatus === "failed"
-            ? `Login failed${crawl.loginRateLimited ? " (the app rate-limited it, HTTP 429; wait a few minutes)" : ""} with the saved credentials for environment "${environment.name}". Check the username, password, login URL and login trigger in Settings, then analyze again.`
-            : crawl.routes.some((route) => route.verified) ? undefined : (crawl.error ?? "no pages could be crawled");
-          routeSummary = { total: crawl.routes.length, verified: crawl.routes.filter((route) => route.verified).length, budgetHit: Boolean(crawl.budgetHit) };
-          crawlApiCalls = crawl.routes.flatMap((route) => route.apiCalls ?? []);
-          await this.saveRouteMap(projectId, crawl.routes, routes, loginStatus === "failed");
-          if (loginStatus === "failed") {
-            // Never replace a good logged-in crawl with a logged-out one: keep the last pages that were not gated.
-            const previous = await this.prisma.analysisRun.findFirst({ where: { projectId, status: "COMPLETED" }, orderBy: { completedAt: "desc" } });
-            const kept = ((previous?.knowledgeModel as { discoveredPages?: DiscoveredPage[] } | null)?.discoveredPages ?? []).filter((entry) => !entry.authGated);
-            if (kept.length) discoveredPages = kept;
-          }
-        }
-        return { discoveredPages, discoveryError, loginStatus, routeSummary, crawlApiCalls };
-      };
-
-      const runSpecs = async () => {
-        let endpoints: EndpointRow[] = [];
-        let flowSpecs: FlowSpecResult[] = [];
-        try {
-          const backendSources = new Map([...sources].filter(([path]) => areas.get(path) === "backend"));
-          endpoints = await discoverEndpoints(this.prisma, provider.impl, projectId, project.organizationId, backendSources, graph);
-          await this.prisma.analysisRun.update({ where: { id: analysisId }, data: { progress: { stage: "specs", modulesPlanned: buildModules(routes, endpoints).length, modulesDone: 0 } as never } }).catch(() => undefined);
-          flowSpecs = await buildFlowSpecs(this.prisma, provider.impl, projectId, analysisId, routes, endpoints, sources, graph, provider.model, (done, total) => {
-            this.prisma.analysisRun.update({ where: { id: analysisId }, data: { progress: { stage: "specs", modulesPlanned: total, modulesDone: done } as never } }).catch(() => undefined);
-          });
-        } catch (specError) {
-          console.warn(`Endpoint discovery / flow specs skipped: ${specError instanceof Error ? specError.message : specError}`);
-        }
-        return { endpoints, flowSpecs };
-      };
-
-      const [{ discoveredPages: rawDiscoveredPages, discoveryError, loginStatus, routeSummary, crawlApiCalls }, { endpoints: discoveredEndpoints, flowSpecs }] = await Promise.all([runCrawl(), runSpecs()]);
-      let discoveredPages = rawDiscoveredPages;
       const liveCalls = new Set(crawlApiCalls.map((call) => { const [method, path] = call.split(/\s+/); return `${method} ${normalizeEndpointPath(path ?? "")}`; }));
       const endpoints: Array<EndpointRow & { liveObserved: boolean }> = discoveredEndpoints.map((row) => ({ ...row, liveObserved: liveCalls.has(`${row.method} ${row.norm}`) }));
       const usageLedger = new UsageLedger();
@@ -196,6 +213,7 @@ export class AnalysisService {
         codeContext,
         discoveredPages,
         routeSummary,
+        codeLinks: linkCoverage,
         loginStatus,
         discoveryError: discoveryError ?? (discoveredPages.length ? undefined : "no environment URL configured for this project"),
         analyzedFiles: [...sources.keys()].filter((path) => path !== "package.json"),
@@ -223,7 +241,8 @@ export class AnalysisService {
   private async saveRouteMap(projectId: string, crawled: CrawledRoute[], codeRoutes: RouteInfo[], loginFailed: boolean) {
     const existing = new Map((await this.prisma.projectRoute.findMany({ where: { projectId } })).map((row) => [row.pattern, row]));
     const codeByPattern = new Map(codeRoutes.map((route) => [route.path.startsWith("/") ? route.path : `/${route.path}`, route]));
-    const patterns = new Set([...crawled.map((route) => route.pattern), ...codeByPattern.keys()]);
+    // A catch-all ("*", "/*") is the not-found page, not a page of the app.
+    const patterns = new Set([...crawled.map((route) => route.pattern), ...codeByPattern.keys()].filter((pattern) => !pattern.includes("*")));
     for (const pattern of patterns) {
       const found = crawled.find((route) => route.pattern === pattern);
       const code = codeByPattern.get(pattern);

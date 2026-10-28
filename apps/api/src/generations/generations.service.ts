@@ -5,7 +5,7 @@ import { recordAudit } from "../common/audit";
 import { assertBillingActive, assertQuota, subscriptionContext } from "../common/billing-context";
 import type { ModelProvider } from "@ai-qa/model-provider";
 import { resolveModelProvider } from "../common/model-provider";
-import { isAuthRoute, isNoiseText, matchesApiCall, parseResponseRule, validateTestDefinition, type TestDefinition } from "@ai-qa/test-dsl";
+import { firstFixtures, isAuthRoute, isNoiseText, matchesApiCall, parseResponseRule, validateTestDefinition, type TestDefinition } from "@ai-qa/test-dsl";
 import { discoverLiveApp, discoveryAuth, type ControlBehavior, type DiscoveredPage } from "../analysis/live-discovery";
 import type { RouteInfo } from "../analysis/analyzer";
 import { PermissionsService } from "../rbac/permissions.service";
@@ -67,7 +67,7 @@ export interface CandidateDraft {
   tags?: string[];
   confidence: number;
   preconditions: string[];
-  steps: Array<{ action: string; target: string; value?: string; condition?: string; key?: boolean; role?: string }>;
+  steps: Array<{ action: string; target: string; value?: string; condition?: string; key?: boolean; role?: string; within?: string }>;
   expectedResult: string;
 }
 
@@ -90,10 +90,11 @@ export class GenerationsService {
    */
   private async environmentTargets(projectId: string, knowledgeModel: KnowledgeModel) {
     const environment = await this.prisma.environmentProfile.findFirst({ where: { projectId }, orderBy: [{ isDefault: "desc" }, { name: "asc" }] });
-    const envFixtures = (environment?.routeFixtures ?? {}) as Record<string, Record<string, string>>;
+    const envFixtures = firstFixtures(environment?.routeFixtures);
     const mapped = await this.routeTargets(projectId, envFixtures, knowledgeModel);
     if (mapped && environment && Object.keys(mapped.autoFixtures).length) {
-      await this.prisma.environmentProfile.update({ where: { id: environment.id }, data: { routeFixtures: { ...mapped.autoFixtures, ...envFixtures } as never } });
+      // The saved values win (kept as saved, lists included); auto-filled ones only fill routes with none.
+      await this.prisma.environmentProfile.update({ where: { id: environment.id }, data: { routeFixtures: { ...mapped.autoFixtures, ...((environment.routeFixtures ?? {}) as object) } as never } });
     }
     const { targets, skipped } = mapped ?? this.buildTargets(knowledgeModel, envFixtures);
     return { environment, targets, skipped };
@@ -603,7 +604,8 @@ export class GenerationsService {
         ...(step?.value !== undefined && step?.value !== null && String(step.value) !== "" ? { value: String(step.value) } : {}),
         ...(step?.condition !== undefined && step?.condition !== null && String(step.condition) !== "" ? { condition: String(step.condition).toLowerCase().trim() } : {}),
         ...(step?.key === true ? { key: true } : {}),
-        ...(typeof step?.role === "string" && step.role ? { role: step.role } : {})
+        ...(typeof step?.role === "string" && step.role ? { role: step.role } : {}),
+        ...(typeof step?.within === "string" && step.within.trim() ? { within: step.within.trim() } : {})
       }))
       .filter((step) => knownActions.includes(step.action) && step.target)
       .map((step) => ({ ...step, action: step.action === "waitfor" ? "waitFor" : step.action === "assertresponse" ? "assertResponse" : step.action }));
@@ -867,6 +869,8 @@ export class GenerationsService {
     const { live, code, text } = this.inventory(target, model);
     const knownRoutes = [...(model.routes ?? []).map((route) => route.path), ...targets.map((entry) => entry.route)].map((path) => new RegExp("^" + path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/:[A-Za-z_]\w*/g, "[^/?#]+") + "/?$"));
     let interacted = false;
+    // Values this draft typed: a record it created shows up in the list under that text, so asserting it later (visible, or hidden once deleted) is about text the page really showed.
+    const typedValues = new Set<string>();
     let allLive = true;
     // Set whenever an interactive step's target names a control the crawler actually exercised: the
     // very next assert/waitFor is then held to what that control really changed, not a static guess.
@@ -918,6 +922,7 @@ export class GenerationsService {
         if (!inLive && !this.found(code, step.target) && !(specEvidence && this.found(specEvidence, step.target))) return `${step.action} "${step.target}" is not a control the app shows`;
         if (!inLive) allLive = false;
         interacted = true;
+        if (step.value) typedValues.add(this.norm(step.value));
         const settled = settleGone();
         if (settled) return settled;
         sawProof = false;
@@ -954,7 +959,7 @@ export class GenerationsService {
         const onPageAlready = this.found(live, step.target) || (text !== "" && text.includes(normTarget));
         // A rule/effect message only appears after the action runs: asserting it before any interaction proves nothing.
         if (inSpec && !interacted && !onPageAlready && !hidden) return `${step.action} "${step.target}" is an outcome message but the test never performs the action`;
-        const inPage = onPageAlready || this.found(code, step.target) || inSpec;
+        const inPage = onPageAlready || this.found(code, step.target) || inSpec || typedValues.has(normTarget);
         if (!chrome.has(normTarget)) dataProof = true;
         if (behavior && fromBehavior) {
           // Held to what this exact control really did: gone texts can only be hidden, new or kept texts only visible.

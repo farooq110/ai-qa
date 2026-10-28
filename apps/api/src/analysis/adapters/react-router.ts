@@ -4,10 +4,12 @@
  * `lazy(() => import(...))` pages without depending on how the config is formatted.
  */
 import { Node, Project, SyntaxKind, type ObjectLiteralExpression, type SourceFile } from "ts-morph";
-import { resolveImport, type AliasRule } from "../analyzer";
+import { resolveImport, throughBarrel, type AliasRule } from "../analyzer";
 import type { RouteHint } from "./types";
 
-const ROUTER_SIGNAL = /createBrowserRouter|createHashRouter|createMemoryRouter|createRoutesFromElements|useRoutes|<Route\b|RouteObject/;
+// The last alternative: a plain route array ({ path: "/x", element: <Page/> }) exported from its own
+// file and handed to useRoutes elsewhere - that file names none of the router APIs itself.
+const ROUTER_SIGNAL = /createBrowserRouter|createHashRouter|createMemoryRouter|createRoutesFromElements|useRoutes|<Route\b|RouteObject|\belement:\s*<[A-Z]/;
 const WRAPPER = /^(?:Suspense|Fragment|ErrorBoundary|Layout|[A-Za-z]*(?:Route|Guard|Provider|Layout|Boundary|Wrapper|Shell))$/;
 
 const literal = (node: Node | undefined): string | undefined => {
@@ -31,10 +33,12 @@ function pageComponent(node: Node | undefined): string | undefined {
   return tags.reverse().find((tag) => !WRAPPER.test(tag)) ?? tags[tags.length - 1];
 }
 
-function importedFile(source: SourceFile, name: string, file: string, all: Set<string>, aliases: AliasRule[]): string | undefined {
+function importedFile(source: SourceFile, name: string, file: string, all: Set<string>, aliases: AliasRule[], sources: Map<string, string>): string | undefined {
   for (const declaration of source.getImportDeclarations()) {
     const matches = declaration.getDefaultImport()?.getText() === name || declaration.getNamedImports().some((entry) => (entry.getAliasNode()?.getText() ?? entry.getName()) === name);
-    if (matches) return resolveImport(declaration.getModuleSpecifierValue(), file, all, aliases) ?? undefined;
+    if (!matches) continue;
+    const resolved = resolveImport(declaration.getModuleSpecifierValue(), file, all, aliases) ?? undefined;
+    return resolved ? throughBarrel(resolved, name, sources, all, aliases) : undefined;
   }
   // const Page = lazy(() => import("./pages/Page"))
   const variable = source.getVariableDeclaration(name);
@@ -61,8 +65,9 @@ export function reactRouterRoutes(sources: Map<string, string>, aliases: AliasRu
 
     const emit = (pattern: string, component: string | undefined, lazyFile?: string) => {
       const clean = ("/" + pattern).replace(/\/+/g, "/").replace(/(.)\/$/, "$1");
-      if (hints.has(clean)) return;
-      const pageFile = lazyFile ?? (component ? importedFile(source, component, file, all, aliases) : undefined);
+      const pageFile = lazyFile ?? (component ? importedFile(source, component, file, all, aliases, sources) : undefined);
+      // First wins, except over a file-less entry (a sidebar menu array lists the same paths with no element).
+      if (hints.get(clean)?.file || (hints.has(clean) && !pageFile)) return;
       hints.set(clean, { pattern: clean, framework: "react-router", ...(pageFile ? { file: pageFile } : {}) });
     };
 

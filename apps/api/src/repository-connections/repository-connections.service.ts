@@ -111,7 +111,8 @@ export class RepositoryConnectionsService {
     return { returnTo: oauthState.returnTo, pending: false };
   }
 
-  /** Repositories the connection can import. GitHub lists exactly what the installation was granted. */
+  /** Repositories the connection can import. GitHub lists exactly what the installation was granted.
+   *  Repositories already imported into the organization are excluded — each repository imports once. */
   async listRepositories(user: AuthenticatedUser, connectionId: string, search = ""): Promise<RepositorySummary[]> {
     await this.permissions.assert(user, PERMISSIONS.PROJECTS_CREATE);
     const connection = await this.requireConnection(user.organizationId, connectionId);
@@ -124,16 +125,57 @@ export class RepositoryConnectionsService {
         repositories.push(...batch.repositories);
         if (batch.repositories.length < 100) break;
       }
-      return repositories.filter((repository) => repository.full_name.toLowerCase().includes(term.toLowerCase())).map(githubSummary);
+      return this.excludeImported(user.organizationId, connection.provider, repositories.filter((repository) => repository.full_name.toLowerCase().includes(term.toLowerCase())).map(githubSummary));
     }
     if (connection.provider === "BITBUCKET") {
-      const query = new URLSearchParams({ role: "contributor", pagelen: "100", sort: "-updated_on", ...(term ? { q: `full_name ~ "${term.replace(/["\\]/g, "")}"` } : {}) });
-      const page = await this.request<{ values: BitbucketRepository[] }>("BITBUCKET", token, `https://api.bitbucket.org/2.0/repositories?${query}`);
-      return page.values.map(bitbucketSummary);
+      const collect = async (url: string) => (await this.request<{ values: BitbucketRepository[] }>("BITBUCKET", token, url)).values.map(bitbucketSummary);
+      // The root /repositories collection is not hosted for workspace-scoped
+      // OAuth consumers (Bitbucket answers 404), and neither are the workspace
+      // listing APIs — candidate workspaces come from repositories already
+      // imported through this connection, the BITBUCKET_WORKSPACES setting,
+      // and the account name itself.
+      try {
+        const query = new URLSearchParams({ role: "contributor", pagelen: "100", sort: "-updated_on", ...(term ? { q: `full_name ~ "${term.replace(/["\\]/g, "")}"` } : {}) });
+        return await this.excludeImported(user.organizationId, connection.provider, await collect(`https://api.bitbucket.org/2.0/repositories?${query}`));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (!message.includes("status 404")) throw error;
+        const candidates = new Set<string>();
+        const imported = await this.prisma.project.findMany({
+          where: { organizationId: user.organizationId, provider: "BITBUCKET" },
+          select: { repoFullName: true }
+        });
+        for (const row of imported) candidates.add(row.repoFullName!.split("/")[0]!);
+        for (const entry of (process.env.BITBUCKET_WORKSPACES ?? "").split(",")) {
+          const workspace = entry.trim();
+          if (workspace) candidates.add(workspace);
+        }
+        candidates.add(connection.accountLogin);
+        const collected: RepositorySummary[] = [];
+        for (const workspace of candidates) {
+          try {
+            collected.push(...await collect(`https://api.bitbucket.org/2.0/repositories/${encodeURIComponent(workspace)}?role=contributor&pagelen=100&sort=-updated_on`));
+          } catch { /* not a workspace this token can read — skip */ }
+        }
+        return this.excludeImported(user.organizationId, connection.provider, collected.filter((repository) => repository.fullName.toLowerCase().includes(term.toLowerCase())));
+      }
     }
     const query = new URLSearchParams({ membership: "true", per_page: "100", order_by: "last_activity_at", ...(term ? { search: term, search_namespaces: "true" } : {}) });
     const projects = await this.request<GitlabProject[]>("GITLAB", token, `${gitlabApi(connection.baseUrl)}/projects?${query}`);
-    return projects.map(gitlabSummary);
+    return this.excludeImported(user.organizationId, connection.provider, projects.map(gitlabSummary));
+  }
+
+  /** Already-imported repositories disappear from the import list so each
+   *  repository can only be imported once. Matching is by provider-scoped
+   *  external id or full name (full name also covers legacy imports that never
+   *  recorded an external id). */
+  private async excludeImported(organizationId: string, provider: ProviderName, repositories: RepositorySummary[]): Promise<RepositorySummary[]> {
+    if (!repositories.length) return repositories;
+    const imported = await this.prisma.project.findMany({ where: { organizationId, provider }, select: { externalRepoId: true, repoFullName: true } });
+    if (!imported.length) return repositories;
+    const externalIds = new Set(imported.map((row) => row.externalRepoId).filter(Boolean));
+    const fullNames = new Set(imported.map((row) => row.repoFullName));
+    return repositories.filter((repository) => !externalIds.has(repository.externalId) && !fullNames.has(repository.fullName));
   }
 
   async listBranches(user: AuthenticatedUser, connectionId: string, repository: string) {
@@ -383,7 +425,13 @@ export class RepositoryConnectionsService {
   }
 
   private async request<T>(provider: ProviderName, token: string, url: string) {
-    const response = await fetch(url, { headers: provider === "GITHUB" ? githubHeaders(token) : { Authorization: `Bearer ${token}`, Accept: "application/json" } });
+    let response: Response;
+    try {
+      response = await fetch(url, { headers: provider === "GITHUB" ? githubHeaders(token) : { Authorization: `Bearer ${token}`, Accept: "application/json" } });
+    } catch (error) {
+      const cause = error instanceof Error && "cause" in error && error.cause instanceof Error ? error.cause.message : error instanceof Error ? error.message : "network error";
+      throw new BadRequestException(`Could not reach ${providerLabel(provider)} (${cause}). Check this server's internet connection and try again.`);
+    }
     if (!response.ok) throw new BadRequestException(`${providerLabel(provider)} API request failed with status ${response.status}`);
     return response.json() as Promise<T>;
   }

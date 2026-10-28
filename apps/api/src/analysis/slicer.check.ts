@@ -6,6 +6,7 @@
  */
 import { strict as assert } from "node:assert";
 import { aliasRules, buildImportGraph, fanIn, reachableFromRoutes, resolveImport, sliceModule } from "./analyzer";
+import { mergeSamePage, splitLargeModules, sliceForModule } from "./specs";
 
 async function run() {
   // --- barrel re-exports: "export * from" and "export {a} from" both create edges + resolvability ---
@@ -102,6 +103,35 @@ async function run() {
   ]);
   assert.equal(counts.get("src/components/ui/button.tsx"), 2);
   assert.equal(counts.get("src/hooks/useOrderForm.ts"), 1);
+
+  // a page far bigger than one slice is split into its large interactive sections; inert bulk is left out;
+  // routes rendering the same page are one module; a panel two pages render is one shared section
+  const bulk = (marker: string, interactive: boolean) => `${interactive ? "export const P = () => <button onClick={go}>Go</button>;\n" : "export const P = () => <svg />;\n"}// ${marker}\n${"x".repeat(120_000)}`;
+  const big = new Map([
+    ["src/pages/Custom.tsx", 'import { Color } from "../components";\nimport Decoration from "../panels/Decoration";\nimport Icons from "../icons/Icons";\nimport Toolbar from "../shared/Toolbar";\nexport const Custom = () => <button onClick={x}>Save</button>;'],
+    ["src/pages/Summary.tsx", 'import Toolbar from "../shared/Toolbar";\nexport const Summary = () => <h1>Summary</h1>;'],
+    ["src/components/index.ts", 'export * from "./Color"'],
+    ["src/components/Color.tsx", bulk("color", true)],
+    ["src/panels/Decoration.tsx", bulk("decoration", true)],
+    ["src/icons/Icons.tsx", bulk("icons", false)],
+    ["src/shared/Toolbar.tsx", bulk("toolbar", true)]
+  ]);
+  const bigGraph = buildImportGraph(big);
+  const merged = mergeSamePage([
+    { key: "customizer", name: "Customizer", entryFiles: ["src/pages/Custom.tsx"], routePaths: ["/customizer"], endpoints: [] },
+    { key: "root", name: "Root", entryFiles: ["src/pages/Custom.tsx"], routePaths: ["/"], endpoints: [] },
+    { key: "summary", name: "Summary", entryFiles: ["src/pages/Summary.tsx"], routePaths: ["/summary"], endpoints: [] }
+  ]);
+  assert.deepEqual(merged.map((group) => group.routePaths), [["/customizer", "/"], ["/summary"]], "routes rendering the same page merge");
+  const parts = splitLargeModules(merged, big, bigGraph, new Set());
+  const entry = (file: string) => parts.find((group) => group.entryFiles[0] === file);
+  assert.ok(entry("src/components/Color.tsx"), "a section behind a barrel is split off");
+  assert.ok(entry("src/panels/Decoration.tsx"), "a large interactive section is split off");
+  assert.ok(!entry("src/icons/Icons.tsx"), "inert bulk is no module");
+  assert.equal(parts.filter((group) => group.entryFiles[0] === "src/shared/Toolbar.tsx").length, 1, "a shared panel is one module");
+  assert.deepEqual(entry("src/shared/Toolbar.tsx")!.routePaths.sort(), ["/", "/customizer", "/summary"], "a shared panel keeps every page that renders it");
+  const pageSlice = sliceForModule(entry("src/pages/Custom.tsx")!, big, bigGraph, new Set()).files.map((file) => file.path);
+  assert.ok(!pageSlice.some((file) => /Decoration|Icons|Color/.test(file)), "the page's own slice leaves its sections and the bulk out");
 
   console.log("slicer.check.ts: all assertions passed");
 }

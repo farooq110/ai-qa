@@ -7,7 +7,7 @@
  */
 import { strict as assert } from "node:assert";
 import type { FlowSpecAction, FlowSpecData } from "@ai-qa/contracts";
-import { findSetupChain, isNavigationOnly, planScenarios, type ModuleSpec } from "./planner";
+import { findSetupChain, isNavigationOnly, isRowScoped, planScenarios, type ModuleSpec } from "./planner";
 import { alignFormSteps, alignToAction, openFormFirst, touchesTrigger } from "./spec-generator";
 
 const SRC = [{ file: "fixture.ts", quote: "1: fixture" }];
@@ -144,6 +144,35 @@ function run() {
   const cleared = alignToAction([{ action: "click", target: "Adjust Stock" }, { action: "click", target: "Apply Adjustment" }, { action: "assert", target: "Category name is required" }], editForm, "required");
   assert.deepEqual(cleared.map((step) => `${step.action}:${step.target}`), ["click:Adjust Stock", "fill:Category Name *", "click:Apply Adjustment", "assert:Category name is required"], "required field cleared before submit");
   assert.equal(touchesTrigger([{ action: "click", target: "Expenses" }, { action: "assert", target: "Expense voided" }], confirm), false, "a test that never touches its trigger is caught");
+
+  // row actions: a record is created first, then the row is picked out by its unique name
+  const addStaff = action({ id: "add-staff", name: "Add Employee", kind: "form", trigger: { route: "/employee", label: "Add Employee", control: "button", container: "Page" }, submit: { label: "Save" },
+    form: [{ name: "name", label: "Employee Name", control: "text", rules: [] }, { name: "email", label: "Email", control: "text", rules: [] }], effects: [] });
+  const deleteStaff = action({ id: "delete-staff", name: "Delete Employee", kind: "confirmation", trigger: { route: "/employee", label: "Delete", control: "button", container: "Employee Page" }, submit: { label: "Delete" }, calls: [{ method: "DELETE", path: "/api/employees/:id", endpointId: null }] });
+  const toolbar = action({ id: "export", name: "Export", kind: "button", rowScoped: false, trigger: { route: "/employee", label: "Delete all", control: "button", container: "Toolbar" } });
+  assert.equal(isRowScoped(deleteStaff), true, "a Delete control on a list page is a row action");
+  assert.equal(isRowScoped(toolbar), false, "the model's rowScoped=false wins over the label");
+  assert.equal(isRowScoped(addStaff), false);
+  const rowPlan = planScenarios([{ moduleKey: "employee", spec: { module: { key: "employee", name: "Employee", summary: "" }, routes: [], entities: [], navigation: [], actions: [addStaff, deleteStaff] } }]);
+  const rowDelete = rowPlan.scenarios.find((scenario) => scenario.actionId === "delete-staff");
+  assert.deepEqual(rowDelete?.setup.chain?.map((link) => link.id), ["add-staff"], "the delete's setup is creating the record it deletes");
+  const created = alignToAction([{ action: "navigate", target: "/employee" }, { action: "click", target: "Add Employee" }, { action: "fill", target: "Employee Name", value: "John Doe" }, { action: "fill", target: "Email", value: "john@example.com" }, { action: "click", target: "Save" }], addStaff);
+  assert.equal(created.find((step) => step.target === "Employee Name")?.value, "John Doe {{uniq}}", "a create happy path gets a findable name");
+  assert.equal(created.find((step) => step.target === "Email")?.value, "john@example.com", "emails are left alone");
+  const deleted = alignToAction([...created.filter((step) => step.action !== "navigate"), { action: "click", target: "Delete" }, { action: "click", target: "Delete" }, { action: "assert", target: "Removed" }], deleteStaff);
+  const deleteClicks = deleted.filter((step) => step.target === "Delete");
+  assert.equal(deleteClicks[0].within, "John Doe {{uniq}}", "the row trigger is scoped to the record the test created");
+  assert.equal(deleteClicks[1].within, undefined, "the confirm click is not row-scoped");
+
+  // required fields the draft skipped are filled before the submit, except the one under test
+  const orderForm = action({ id: "create-order-2", name: "Create Order", kind: "form", trigger: { route: "/order", label: "Create Order", control: "button", container: "" }, submit: { label: "Save Order" },
+    form: [{ name: "customer", label: "Customer Name", control: "text", rules: [{ id: "required", kind: "required", value: null, message: "Customer is required", layer: "client" }] },
+      { name: "qty", label: "Quantity", control: "number", rules: [{ id: "qty-required", kind: "required", value: null, message: "Quantity cannot be 0", layer: "client" }] },
+      { name: "contact", label: "Contact Number", control: "text", rules: [{ id: "contact-required", kind: "required", value: null, message: "Contact is required", layer: "client" }, { id: "contact-min", kind: "minLength", value: "11", message: "Bad number", layer: "client" }] }] });
+  const filled = alignToAction([{ action: "click", target: "Create Order" }, { action: "fill", target: "Customer Name", value: "Ann" }, { action: "click", target: "Save Order" }, { action: "assert", target: "Order Created!" }], orderForm);
+  assert.deepEqual(filled.filter((step) => step.action === "fill").map((step) => `${step.target}=${step.value}`), ["Customer Name=Ann {{uniq}}", "Quantity=1", "Contact Number=03001234567"]);
+  const underTest = alignToAction([{ action: "click", target: "Create Order" }, { action: "fill", target: "Customer Name", value: "Ann" }, { action: "click", target: "Save Order" }, { action: "assert", target: "Quantity cannot be 0" }], orderForm, "qty-required");
+  assert.equal(underTest.find((step) => step.target === "Quantity")?.value, "", "the field under test stays empty");
 
   console.log("planner.check.ts: all assertions passed");
 }

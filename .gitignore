@@ -13,6 +13,7 @@ graphify-out
 /scripts/*
 !/scripts/deploy.sh
 !/scripts/upload-installer.mjs
+!/scripts/upload-recorder-installers.sh
 apps/landing/.impeccable
 apps/landing/DESIGN.md
 .agents

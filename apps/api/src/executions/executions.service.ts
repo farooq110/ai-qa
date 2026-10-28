@@ -93,7 +93,7 @@ export class ExecutionsService {
       }
     });
     if (!plan) throw new NotFoundException("Execution plan not found");
-    return { ...this.summarize(plan), items: plan.items, artifacts: plan.artifacts.map((artifact) => ({ id: artifact.id, kind: artifact.kind, testCaseId: artifact.testCaseId, url: `/v1/artifacts/${artifact.id}` })) };
+    return { ...this.summarize(plan), items: plan.items, artifacts: plan.artifacts.map((artifact) => ({ id: artifact.id, kind: artifact.kind, testCaseId: artifact.testCaseId, name: artifact.path.split(/[\\/]/).pop() ?? "", url: `/v1/artifacts/${artifact.id}` })) };
   }
 
   async cancel(user: AuthenticatedUser, projectId: string, planId: string) {

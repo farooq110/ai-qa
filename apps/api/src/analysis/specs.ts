@@ -11,11 +11,11 @@ import { createHash } from "node:crypto";
 import type { ModelProvider } from "@ai-qa/model-provider";
 import type { FlowSpecAction, FlowSpecData } from "@ai-qa/contracts";
 import { isAuthRoute, joinEndpoint } from "@ai-qa/test-dsl";
-import { fanIn, featureName, resolveImport, sliceModule, type ImportGraph, type RouteInfo } from "./analyzer";
+import { fanIn, featureName, importTargets, resolveImport, sliceModule, type ImportGraph, type RouteInfo } from "./analyzer";
 import type { EndpointRow } from "./endpoints";
 import type { PrismaService } from "../database/prisma.service";
 
-const PROMPT_VERSION = "v5"; // v5: success messages from mutation hooks
+const PROMPT_VERSION = "v8"; // v8: chunked frontend pass
 const SCHEMA_VERSION = "v4"; // v4: submit + options anchored; // v3: literal recovery in anchorFlowSpec - stored specs are post-anchoring, so they must be rebuilt
 const FRONTEND_BUDGET_TOKENS = 50_000;
 const BACKEND_BUDGET_TOKENS = 35_000;
@@ -26,7 +26,7 @@ const normalize = (text: string) => text.replace(/\s+/g, " ").trim();
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 const quoteContains = (haystack: string, literal: string | null | undefined) => !literal || normalize(haystack).includes(normalize(literal));
 
-export interface ModuleGroup { key: string; name: string; entryFiles: string[]; routePaths: string[]; endpoints: EndpointRow[] }
+export interface ModuleGroup { key: string; name: string; entryFiles: string[]; routePaths: string[]; endpoints: EndpointRow[]; /** Files (with what is only reachable through them) left to sections split off this module. */ exclude?: string[] }
 
 const dirname = (path: string) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "");
 const basename = (path: string) => path.split("/").pop() ?? path;
@@ -88,6 +88,123 @@ export function buildModules(routes: RouteInfo[], endpoints: EndpointRow[]): Mod
   // A group with no page file (a redirect or alias route) has no UI to describe; its endpoints already
   // belong to the module whose pages call them, and summarizing it again only duplicates that module.
   return groups.filter((group) => group.entryFiles.length);
+}
+
+/**
+ * Several routes rendering the same page file ("/", "/customizer/", "/revise-design/:n" -> CustomizerPage)
+ * are one module: describing the same code once per route only multiplies the calls.
+ */
+export function mergeSamePage(groups: ModuleGroup[]): ModuleGroup[] {
+  const byEntries = new Map<string, ModuleGroup>();
+  for (const group of groups) {
+    const key = [...group.entryFiles].sort().join("|");
+    const kept = byEntries.get(key);
+    if (!kept) { byEntries.set(key, { ...group, routePaths: [...group.routePaths], endpoints: [...group.endpoints] }); continue; }
+    kept.routePaths.push(...group.routePaths.filter((path) => !kept.routePaths.includes(path)));
+    kept.endpoints.push(...group.endpoints.filter((endpoint) => !kept.endpoints.some((other) => other.id === endpoint.id)));
+  }
+  return [...byEntries.values()];
+}
+
+const INTERACTIVE_CODE = /\bon(?:Click|Submit|Change)\s*=|<(?:button|Button|input|Input|form|select|textarea|TextField)\b|\buseForm\(/;
+
+/** Code a section must have (in tokens, not counting shared files) to be split off as its own module. */
+const MIN_SECTION_TOKENS = 6_000;
+
+/**
+ * A page whose own code is far bigger than one module's slice budget (a customizer with color, decoration
+ * and quantity panels) only ever gets its first ~50k tokens read: the deeper panels never reach the model.
+ * Split it: each large component the page imports becomes its own module (recursing into one that is still
+ * too large), and the page keeps the rest. Every part has the page's routes, so its actions keep their page.
+ *
+ * Ownership is by proximity: every file belongs to the page closest to it in the import graph (pages are
+ * all searched from at once), so a panel the customizer renders is the customizer's, even when another
+ * page can reach it through a shared toolbar; and no page's sections climb into another page or the app shell.
+ */
+export function splitLargeModules(groups: ModuleGroup[], sources: Map<string, string>, graph: ImportGraph, shared: Set<string>): ModuleGroup[] {
+  const all = new Set(sources.keys());
+  const budget = FRONTEND_BUDGET_TOKENS * 3.5;
+  // A pure re-export file ("export * from './x'" lines only) is transparent: its targets are the children.
+  const barrel = (file: string) => (sources.get(file) ?? "").split("\n").every((line) => /^\s*(?:export\s*(?:\*|\{[^}]*\})\s*from\s|import\s|\/\/|$)/.test(line));
+  const children = (file: string, seen = new Set<string>()): string[] => [...new Set((graph.importsByFile.get(file) ?? []).flatMap((edge) => importTargets(edge, file, sources, all, graph.aliases))
+    .flatMap((child) => (barrel(child) && !seen.has(child) ? (seen.add(child), children(child, seen)) : [child])))]
+    .filter((child) => child !== file && !shared.has(child) && sources.has(child));
+
+  // Every page closest to a file owns it (a toolbar two pages render at the same distance is both of theirs).
+  const owners = new Map<string, Set<string>>();
+  const depthOf = new Map<string, number>();
+  let frontier = [...new Set(groups.flatMap((group) => group.entryFiles))];
+  for (const page of frontier) { owners.set(page, new Set([page])); depthOf.set(page, 0); }
+  for (let depth = 1; frontier.length; depth++) {
+    const next = new Set<string>();
+    for (const file of frontier) {
+      for (const child of children(file)) {
+        if (depthOf.has(child) && depthOf.get(child)! < depth) continue;
+        if (!depthOf.has(child)) { depthOf.set(child, depth); owners.set(child, new Set()); next.add(child); }
+        for (const page of owners.get(file)!) owners.get(child)!.add(page);
+      }
+    }
+    frontier = [...next];
+  }
+  const owns = (page: string, file: string) => owners.get(file)?.has(page) ?? false;
+  const routesOf = new Map(groups.map((group) => [group.entryFiles[0], group.routePaths] as const));
+
+  /** Walk `file`'s part of `page`'s region, not entering `skip`; stop early once `done` says so. */
+  const walk = (page: string, file: string, skip: Set<string>, visit: (current: string) => boolean) => {
+    const seen = new Set([file]);
+    for (let level = [file]; level.length;) {
+      const next: string[] = [];
+      for (const current of level) {
+        if (visit(current)) return;
+        for (const child of children(current)) if (!seen.has(child) && !skip.has(child) && owns(page, child)) { seen.add(child); next.push(child); }
+      }
+      level = next;
+    }
+  };
+  const size = (page: string, file: string, skip: Set<string>) => {
+    let total = 0;
+    walk(page, file, skip, (current) => (total += sources.get(current)?.length ?? 0) > budget * 3);
+    return total;
+  };
+  /** The section itself (or what it renders directly) is something a user acts on - an icon or a constants table is not. */
+  const interactive = (page: string, file: string) =>
+    [file, ...children(file).filter((child) => owns(page, child))].some((current) => INTERACTIVE_CODE.test(sources.get(current) ?? ""));
+  const name = (file: string) => {
+    const base = file.split("/").pop()!.replace(/\.[^.]+$/, "");
+    const label = base === "index" ? file.split("/").slice(-2, -1)[0] : base;
+    return label.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[-_]/g, " ").replace(/^./, (first) => first.toUpperCase());
+  };
+
+  const out: ModuleGroup[] = [];
+  // A section shared by several pages is described once (by the first page that splits it off).
+  const claimed = new Set<string>();
+  const usedKeys = new Set(groups.map((group) => group.key));
+  const split = (group: ModuleGroup, page: string, depth: number) => {
+    const root = group.entryFiles[0];
+    const taken = new Set(group.exclude);
+    if (depth > 3 || size(page, root, taken) <= budget * 1.3) { out.push(group); return; }
+    const large = children(root).filter((child) => owns(page, child) && !taken.has(child) && size(page, child, taken) >= MIN_SECTION_TOKENS * 3.5);
+    if (!large.length) { out.push(group); return; }
+    for (const child of large) taken.add(child);
+    out.push({ ...group, exclude: [...taken] });
+    // Large but inert (icons, generated data): noise that would eat the slice budget - excluded, not a module.
+    for (const section of large.filter((child) => !claimed.has(child) && interactive(page, child))) {
+      claimed.add(section);
+      const sharedBy = [...owners.get(section)!];
+      const routePaths = [...new Set(sharedBy.flatMap((owner) => routesOf.get(owner) ?? []).concat(group.routePaths))];
+      const slug = name(section).toLowerCase().replace(/\s+/g, "-");
+      // Rendered by several pages: named for itself, not for whichever page happened to split it off.
+      let key = sharedBy.length > 1 ? `shared~${slug}` : `${group.key}~${slug}`;
+      for (let n = 2; usedKeys.has(key); n++) key = `${key.replace(/-\d+$/, "")}-${n}`;
+      usedKeys.add(key);
+      split({ key, name: sharedBy.length > 1 ? name(section) : `${group.name}: ${name(section)}`, entryFiles: [section], routePaths, endpoints: [], exclude: [...taken].filter((file) => file !== section) }, page, depth + 1);
+    }
+  };
+  for (const group of groups) {
+    if (group.entryFiles.length === 1) split(group, group.entryFiles[0], 0);
+    else out.push(group);
+  }
+  return out;
 }
 
 /** One cached LLM call over the files with the highest fan-in: a short prose digest of error/permission/validation conventions, so every module's prompt shares the same grounding without re-deriving it. */
@@ -153,7 +270,7 @@ export const FLOW_SPEC_SCHEMA = {
       type: "array", items: {
         type: "object", additionalProperties: false,
         properties: {
-          id: { type: "string" }, name: { type: "string" }, kind: { type: "string" },
+          id: { type: "string" }, name: { type: "string" }, kind: { type: "string" }, rowScoped: { type: "boolean" },
           trigger: { type: "object", additionalProperties: false, properties: { route: { type: "string" }, label: { type: "string" }, control: { type: "string" }, container: { type: "string" } }, required: ["route", "label", "control", "container"] },
           preconditions: { type: "array", items: { type: "object", additionalProperties: false, properties: { kind: { type: "string" }, entity: { type: "string" }, values: { type: "array", items: { type: "string" } }, description: { type: "string" }, enforcedBy: ENUM2("client", "server") }, required: ["kind", "entity", "values", "description", "enforcedBy"] } },
           submit: { type: ["object", "null"], additionalProperties: false, properties: { label: { type: "string" } }, required: ["label"] },
@@ -164,7 +281,7 @@ export const FLOW_SPEC_SCHEMA = {
           effects: { type: "array", items: { type: "object", additionalProperties: false, properties: { kind: { type: "string", enum: ["transition", "message", "navigate", "list-change", "field-change"] }, entity: { type: ["string", "null"] }, from: { type: "array", items: { type: "string" } }, to: { type: ["string", "null"] }, text: { type: ["string", "null"] }, route: { type: ["string", "null"] } }, required: ["kind", "entity", "from", "to", "text", "route"] } },
           src: { type: "array", items: SOURCE_QUOTE_SCHEMA }
         },
-        required: ["id", "name", "kind", "trigger", "submit", "preconditions", "permission", "form", "calls", "backendRules", "effects", "src"]
+        required: ["id", "name", "kind", "rowScoped", "trigger", "submit", "preconditions", "permission", "form", "calls", "backendRules", "effects", "src"]
       }
     }
   },
@@ -174,6 +291,9 @@ export const FLOW_SPEC_SCHEMA = {
 const SYSTEM_PROMPT = "You read one module's frontend and backend code (both given below) and describe its user-facing actions. "
   + "Return ONLY JSON matching the given schema. Every action needs: its trigger (the route, the visible label, what kind of control it is, and its containing page/section), any precondition the UI enforces before showing it (e.g. an entity must be in a certain status), the permission it requires if the code checks one, its form fields and their validation rules (client AND backend), the backend endpoint(s) it calls, any backend-only business rule with a user-visible message, and what happens after it succeeds (status change, message shown, navigation, list update). "
   + "A success message is often NOT in the component: it sits in a mutation hook or service callback (onSuccess -> toast(...), successMessage(...), notify(...), message.success(...)) in another file of the slice - follow the call from the form's submit handler and report that text as a 'message' effect, copied with its exact casing. "
+  + "'rowScoped' is true when the trigger is a control repeated for each record of a list, table or card grid (an Edit, Delete, View or Approve control on a row) and acts on that one record; false for toolbar buttons, page-level forms and the Add/Create button that opens an empty form. "
+  + "List EVERY field the user must fill for the action to succeed, including fields rendered from field-config arrays ({ label, name, validation }) and from per-item or per-tab sections (an order's line items, a product's variants), each with its validation messages (yup .required(\"...\"), .min(n, \"...\")) as rules. "
+  + "A success or error message is often sent by the server (a 'msg' or 'message' in the response) and shown by the frontend (SuccessMessage(res.msg), toast(response.message)): report the server's text as a 'message' effect. When that text is a template over a constant (`${collectionName} Created!` with const collectionName = \"Order\"), report it resolved (\"Order Created!\") and quote the template line. "
   + "When the trigger opens a form, dialog or confirmation, 'submit' is the visible label of the button that saves or confirms it (e.g. \"Save\", \"Create\", \"Confirm\", or the same text as the trigger) - quote its line too; null only when the trigger itself performs the action. For a select/radio/combobox field, 'options' lists the visible option labels ONLY when they are written literally in the code (a static array, enum or <option> list); leave it empty when options come from an API. "
   + "'src' is a LIST of quotes, not one: every literal you report (the trigger's visible label text, a permission name, a validation/rule message, an effect's message text) must have its OWN entry in 'src' pointing at the exact line, in whichever file that literal actually appears in - the trigger's label almost always comes from a DIFFERENT file (a frontend component) than its permission check or backend rule (a backend route/controller/service file). Citing only the backend route line for an action whose trigger label is frontend text is NOT enough; add the frontend line too. "
   + "Every 'src' entry's 'quote' must be copied verbatim, including the line-number prefix given. Never invent a label, message, permission name or rule that the given code does not literally contain. If you are not sure an action exists, or cannot find the real source line for one of its literals, leave that literal out (or the whole action out) rather than guessing.";
@@ -198,10 +318,36 @@ export function locateLiteral(literal: string, sliceSources: Map<string, string>
   return null;
 }
 
+/**
+ * Messages built from a template over a constant in the same file (`${collectionName} Created!` with
+ * `const collectionName = "Order"`): resolved text -> the template's line. Lets such a message anchor:
+ * it is in the code, just not as one literal.
+ */
+export function resolvedTemplates(sliceSources: Map<string, string>): Map<string, { file: string; quote: string }> {
+  const out = new Map<string, { file: string; quote: string }>();
+  for (const [file, content] of sliceSources) {
+    if (!content.includes("${")) continue;
+    const constants = new Map<string, string>();
+    for (const match of content.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::\s*[\w.]+)?\s*=\s*(["'])([^"'\n]{1,60})\2/g)) {
+      constants.set(match[1], constants.has(match[1]) && constants.get(match[1]) !== match[3] ? "" : match[3]); // two different values: ambiguous
+    }
+    if (!constants.size) continue;
+    for (const line of content.split("\n")) {
+      for (const template of line.matchAll(/`([^`\n]*\$\{[^`\n]*)`/g)) {
+        let unresolved = false;
+        const text = template[1].replace(/\$\{\s*([A-Za-z_$][\w$]*)\s*\}/g, (_, name: string) => constants.get(name) || ((unresolved = true), ""));
+        if (!unresolved && !text.includes("${") && text.trim()) out.set(normalize(text), { file, quote: line });
+      }
+    }
+  }
+  return out;
+}
+
 export function anchorFlowSpec(raw: Partial<FlowSpecData>, sliceSources: Map<string, string>): { spec: FlowSpecData; stats: { facts: number; dropped: string[] } } {
   const normalizedContents = new Map([...sliceSources].map(([file, content]) => [file, normalize(content)]));
   const dropped: string[] = [];
   const actions: FlowSpecAction[] = [];
+  const templates = resolvedTemplates(sliceSources);
 
   for (const action of raw.actions ?? []) {
     const quotes = (action.src ?? []).filter((quote) => quote.file && quote.quote && normalizedContents.get(quote.file)?.includes(normalize(stripLineNumbers(quote.quote))));
@@ -212,7 +358,10 @@ export function anchorFlowSpec(raw: Partial<FlowSpecData>, sliceSources: Map<str
     const recover = (literal: string | null | undefined) => {
       if (!literal || quoteContains(anchoredText, literal)) return;
       const found = locateLiteral(literal, sliceSources, quotes.map((quote) => quote.file));
-      if (found) { quotes.push(found); anchoredText += ` \n ${found.quote}`; }
+      if (found) { quotes.push(found); anchoredText += ` \n ${found.quote}`; return; }
+      // Built from a template: quote the template's line; the resolved text is what the checks below compare.
+      const template = templates.get(normalize(literal));
+      if (template) { quotes.push(template); anchoredText += ` \n ${template.quote} \n ${literal}`; }
     };
     recover(action.trigger?.label);
     recover(action.submit?.label);
@@ -232,12 +381,19 @@ export function anchorFlowSpec(raw: Partial<FlowSpecData>, sliceSources: Map<str
     // it to the same bar as a label or message, not a free pass just because it's a short word.
     const preconditions = (action.preconditions ?? []).filter((precondition) => precondition.values.every((value) => quoteContains(anchoredText, value)));
     const effects = (action.effects ?? []).filter((effect) => quoteContains(anchoredText, effect.text) && quoteContains(anchoredText, effect.to) && effect.from.every((value) => quoteContains(anchoredText, value)));
-    const form = (action.form ?? []).map((field) => ({ ...field, options: (field.options ?? []).filter((option) => quoteContains(anchoredText, option)), rules: field.rules.filter((rule) => quoteContains(anchoredText, rule.message)) }));
+    // Rule ids name a scenario ("…:VALIDATION:<id>"): models reuse "required" for every field, which
+    // would collapse each field's required check into one scenario. Repeats get the field's name.
+    const ruleIds = new Set<string>();
+    const form = (action.form ?? []).map((field) => ({ ...field, options: (field.options ?? []).filter((option) => quoteContains(anchoredText, option)), rules: field.rules.filter((rule) => quoteContains(anchoredText, rule.message)).map((rule) => {
+      const id = ruleIds.has(rule.id) ? `${field.name}-${rule.id}`.replace(/:/g, "-") : rule.id;
+      ruleIds.add(id);
+      return id === rule.id ? rule : { ...rule, id };
+    }) }));
     const submit = action.submit?.label && quoteContains(anchoredText, action.submit.label) ? { label: action.submit.label } : null;
 
     actions.push({
       id: action.id ?? `action_${actions.length}`, name: action.name ?? "", kind: action.kind ?? "",
-      trigger: action.trigger, submit, preconditions, permission, form,
+      rowScoped: action.rowScoped === true, trigger: action.trigger, submit, preconditions, permission, form,
       calls: action.calls ?? [], backendRules, effects, src: quotes
     });
   }
@@ -264,7 +420,7 @@ interface ModuleSliceResult { files: Array<{ path: string; hash: string; role: "
 
 /** Frontend slice (sliceModule over entry files) + backend slice (route declaration lines + sliceModule over handler files), both as numbered views for anchoring. */
 export function sliceForModule(group: ModuleGroup, sources: Map<string, string>, graph: ImportGraph, shared: Set<string>): ModuleSliceResult {
-  const frontendFiles = sliceModule(group.entryFiles, sources, graph, { budgetTokens: FRONTEND_BUDGET_TOKENS, shared });
+  const frontendFiles = sliceModule(group.entryFiles, sources, graph, { budgetTokens: FRONTEND_BUDGET_TOKENS, shared: group.exclude?.length ? new Set([...shared, ...group.exclude]) : shared });
   const allFiles = new Set(sources.keys());
   const handlerFiles = [...new Set(group.endpoints.map((endpoint) => endpoint.handlerFile).filter((file): file is string => Boolean(file)))];
   const routeFiles = [...new Set(group.endpoints.map((endpoint) => endpoint.file))];
@@ -366,6 +522,29 @@ export function gapSlice(endpoints: EndpointRow[], slice: ModuleSliceResult, sou
   return out;
 }
 
+const FRONTEND_CHUNK_CHARS = 18_000 * 3.5;
+const MAX_CHUNK_CALLS = 4;
+// Label and calls, not route: a section shared by several pages gets the same control reported once per
+// route it knows; two "Delete" buttons calling different endpoints stay two actions.
+const actionKey = (action: FlowSpecAction) => `${normalize(action.trigger.label).toLowerCase()}|${action.calls.map((call) => `${call.method} ${call.path}`).sort().join(",")}`;
+const frontendChars = (slice: ModuleSliceResult) => slice.files.filter((file) => file.role === "frontend").reduce((sum, file) => sum + (slice.promptFiles[file.path]?.length ?? 0), 0);
+
+/** The module's frontend files, in slice order (page first, then what it renders), packed into prompt-sized chunks. */
+function frontendChunks(slice: ModuleSliceResult): Array<Record<string, string>> {
+  const chunks: Array<Record<string, string>> = [];
+  let current: Record<string, string> = {};
+  let size = 0;
+  for (const file of slice.files.filter((entry) => entry.role === "frontend")) {
+    const text = slice.promptFiles[file.path];
+    if (!text) continue;
+    if (size && size + text.length > FRONTEND_CHUNK_CHARS) { chunks.push(current); current = {}; size = 0; }
+    current[file.path] = text;
+    size += text.length;
+  }
+  if (size) chunks.push(current);
+  return chunks;
+}
+
 export interface FlowSpecResult { moduleKey: string; name: string; spec: FlowSpecData; stats: { facts: number; dropped: string[]; tokens: number; chunks: number }; cached: boolean; inputTokens: number; outputTokens: number }
 
 /** Builds (or reuses, by sliceHash) the flow spec for one module. Never throws - a failed module reports an empty spec with the error in stats.dropped, since one bad module should not stop the others. */
@@ -392,6 +571,7 @@ async function buildModuleSpec(
   const prompt = JSON.stringify({ module: group.key, routes: group.routePaths, conventions: conventions.text, files: slice.promptFiles });
   let inputTokens = 0, outputTokens = 0;
   let raw: Partial<FlowSpecData> = {};
+  let mainFailure: string | undefined;
   try {
     const response = await provider.generateStructured<Partial<FlowSpecData>>({
       organizationId: "", projectId, jobId: `flow-spec-${group.key}`, capability: "classification",
@@ -401,11 +581,13 @@ async function buildModuleSpec(
     inputTokens = response.usage.inputTokens;
     outputTokens = response.usage.outputTokens;
   } catch (error) {
-    const empty: FlowSpecData = { module: { key: group.key, name: group.name, summary: "" }, routes: group.routePaths, entities: [], navigation: [], actions: [] };
-    return { moduleKey: group.key, name: group.name, spec: empty, stats: { facts: 0, dropped: [`LLM call failed: ${error instanceof Error ? error.message : String(error)}`], tokens: 0, chunks: 1 }, cached: false, inputTokens: 0, outputTokens: 0 };
+    // Not fatal: the per-chunk pass below still reads the module (a huge slice is the usual cause).
+    mainFailure = `LLM call failed: ${error instanceof Error ? error.message : String(error)}`;
   }
 
   const { spec, stats: anchorStats } = anchorFlowSpec(raw, slice.sources);
+  spec.actions = spec.actions.filter((action, index) => spec.actions.findIndex((other) => actionKey(other) === actionKey(action)) === index);
+  if (mainFailure) anchorStats.dropped.push(mainFailure);
   let chunks = 1;
 
   // One call over a ~90k-token slice reliably lists only a few of the module's actions. Every write
@@ -438,6 +620,36 @@ async function buildModuleSpec(
       }
     } catch (error) {
       anchorStats.dropped.push(`gap call failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  // Without backend endpoints there is no checklist of what one big call skipped (a frontend-only repo, a
+  // module whose server lives elsewhere), and the main call may have failed outright. When it came back
+  // thin (or failed), read the module's frontend again in chunks: each call describes only the actions
+  // whose trigger its own files render.
+  if ((mainFailure || (!group.endpoints.length && spec.actions.length < 2)) && frontendChars(slice) > FRONTEND_CHUNK_CHARS) {
+    const known = new Set(spec.actions.map(actionKey));
+    for (const files of frontendChunks(slice).slice(0, MAX_CHUNK_CALLS)) {
+      const chunkSources = new Map(Object.entries(files));
+      try {
+        chunks++;
+        const response = await provider.generateStructured<Partial<FlowSpecData>>({
+          organizationId: "", projectId, jobId: `flow-spec-${group.key}-chunk`, capability: "classification",
+          systemPrompt: SYSTEM_PROMPT + " This is a focused follow-up over part of the module: describe ONLY the user-facing actions whose trigger control is rendered in the files given (forms, dialogs, wizard steps, panels). Skip the actions listed in 'alreadyFound'.",
+          prompt: JSON.stringify({ module: group.key, routes: group.routePaths, conventions: conventions.text, alreadyFound: spec.actions.map((action) => action.name), files }),
+          schemaName: "FlowSpecData", schema: FLOW_SPEC_SCHEMA, temperature: 0, maxTokens: 16_000
+        });
+        inputTokens += response.usage.inputTokens;
+        outputTokens += response.usage.outputTokens;
+        const part = anchorFlowSpec(response.output ?? {}, chunkSources);
+        anchorStats.dropped.push(...part.stats.dropped.map((reason) => `chunk: ${reason}`));
+        for (const action of part.spec.actions) {
+          if (known.has(actionKey(action))) continue;
+          known.add(actionKey(action));
+          spec.actions.push(action);
+        }
+      } catch (error) {
+        anchorStats.dropped.push(`chunk call failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   }
   const stats = { facts: spec.actions.length, dropped: anchorStats.dropped, tokens: inputTokens + outputTokens, chunks };
@@ -475,12 +687,16 @@ export async function buildFlowSpecs(
   routes: RouteInfo[], endpoints: EndpointRow[], sources: Map<string, string>, graph: ImportGraph, model: string,
   onProgress?: (done: number, total: number) => void
 ): Promise<FlowSpecResult[]> {
-  const groups = buildModules(routes, endpoints);
-  if (!groups.length) return [];
-
-  const entries = routes.filter((route): route is RouteInfo & { file: string } => Boolean(route.file)).map((route) => ({ file: route.file, sources }));
+  // One entry per page FILE: five routes rendering the same page would count its components five times
+  // and mark that page's own panels as shared noise.
+  const entries = [...new Set(routes.flatMap((route) => (route.file ? [route.file] : [])))].map((file) => ({ file, sources }));
   const fanInCounts = fanIn(graph, entries);
-  const shared = new Set([...fanInCounts.entries()].filter(([, count]) => count >= Math.max(5, entries.length * 0.25)).map(([file]) => file));
+  // A route's own page file is never "shared" noise, however many routes reach it: dropping it from every
+  // slice (a barrel every route resolved to, one page behind several routes) leaves the modules empty.
+  const entryFiles = new Set(entries.map((entry) => entry.file));
+  const shared = new Set([...fanInCounts.entries()].filter(([file, count]) => !entryFiles.has(file) && count >= Math.max(5, entries.length * 0.25)).map(([file]) => file));
+  const groups = splitLargeModules(mergeSamePage(buildModules(routes, endpoints)), sources, graph, shared);
+  if (!groups.length) return [];
 
   const conventions = await conventionsDigest(prisma, provider, projectId, routes, sources, graph);
 
