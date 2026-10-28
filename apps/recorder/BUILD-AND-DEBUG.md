@@ -43,7 +43,7 @@ pnpm --filter @ai-qa/recorder start      # from the repo root (manual dev run)
 |---|---|---|
 | Node.js | 20+ | Docker build uses Node 22 |
 | pnpm | 10.30.1 | Repo pins it via corepack: `corepack enable && corepack prepare pnpm@10.30.1 --activate` |
-| OS for building | see per-platform | Windows build → Windows machine, macOS build → Mac required |
+| OS for building | see per-platform | Linux/macOS build → Docker script or local; Windows build → Docker cross-build script (Linux host) or a Windows machine; macOS build → Mac required |
 
 Install recorder dependencies from the **repo root** (it is a pnpm workspace):
 
@@ -108,6 +108,33 @@ the running recorder to stop and remove itself over `POST /uninstall` on the sam
 
 If `curl` works in dev but the web page never detects the recorder, the problem is
 browser-side (see the detection troubleshooting row in section 7), not the recorder.
+
+### GPU modes (hardware acceleration vs. software fallback)
+
+The recorder renders whatever sites the user records — including heavy WebGL / 3D
+pages — so **hardware acceleration is fully ON by default on every platform**:
+`main.js` appends `--enable-gpu` and `--ignore-gpu-blocklist` before the app is ready
+(Chromium reads these once, at GPU-process startup). `--ignore-gpu-blocklist` matters
+most on Linux, where Chromium's conservative driver blocklist otherwise forces many
+capable NVIDIA/AMD/VM GPUs into software rendering — which broke GPU-heavy pages in
+older builds (they disabled the GPU entirely, plus the software rasterizer).
+
+For troubleshooting — headless boxes, VMs without 3D, or a machine where the GPU
+driver misbehaves — launch with the fallback flag to force software rendering
+(SwiftShader stays available, so pages still draw):
+
+```bash
+./ProoflineRecorder.AppImage --disable-gpu-mode          # Linux
+"C:/Users/<you>/AppData/Local/Proofline Recorder/Proofline Recorder.exe" --disable-gpu-mode   # Windows
+```
+
+In that mode the app appends `--disable-gpu` (plus disables hardware video decode and
+the VA-API stack, which are pointless without a GPU). The active mode is logged at
+startup (`[recorder] GPU: hardware acceleration enabled (default)` or `… software
+rendering requested via --disable-gpu-mode`), and if the GPU process ever dies at
+runtime, a `[recorder] GPU process gone (…)` line explains why Chromium fell back to
+software. Linux safety switches are unaffected: `--no-sandbox` is still appended on
+Linux (and by the packaged launcher), keeping universal-distro startup behavior intact.
 
 ---
 
@@ -186,7 +213,38 @@ cat ~/.config/autostart/proofline-recorder.desktop                      # login 
 
 ## 4. Building the Windows installer
 
-Build **on a Windows machine** (electron-builder needs Windows to sign/produce NSIS):
+### Option A — Docker cross-build script (recommended, builds from Linux)
+
+`scripts/build-windows.sh` cross-compiles the NSIS installer on any Linux machine
+with Docker — **no Windows host and nothing extra installed on yours**: Wine (which
+electron-builder needs to embed the exe's version/resource block) lives inside the
+build image, never on the host:
+
+```bash
+# from the repo root, requires Docker
+./apps/recorder/scripts/build-windows.sh
+# → apps/recorder/dist/ProoflineRecorder-Setup.exe   (NSIS, one-click, per-user)
+# optional: ./apps/recorder/scripts/build-windows.sh /path/to/output-dir
+```
+
+What happens under the hood (`infrastructure/docker/recorder-build-win.Dockerfile`):
+a Debian image with Wine (32- and 64-bit loaders) + Node 22 + pnpm installs the
+recorder's dependencies with a frozen lockfile and runs `electron-builder --win nsis`,
+which downloads the Windows Electron distribution and produces the installer. The
+first build downloads the Wine layer (~5 minutes); later builds reuse the cache.
+
+> **Why Docker and not a bare `pnpm dist --win nsis` on the host?** Two reasons:
+> (1) electron-builder refuses to cross-build for Windows without Wine
+> (`⨯ wine is required`) — the image carries it so the host doesn't have to;
+> (2) on a full checkout electron-builder's dependency walk can trip over unrelated
+> workspace packages (e.g. `ENOENT … apps/landing/node_modules/next` from a stale
+> pnpm link) — the image copies only the recorder's manifests, so no other app can
+> break the build.
+
+### Option B — Manual build on a Windows machine
+
+Build natively on Windows (also the path to take when you need code signing with a
+hardware token):
 
 ```powershell
 # from the repo root
@@ -195,6 +253,26 @@ pnpm install --filter @ai-qa/recorder...
 pnpm --filter @ai-qa/recorder dist
 # → apps/recorder/dist/ProoflineRecorder-Setup.exe   (NSIS, one-click, per-user)
 ```
+
+(On Windows the target defaults to `win → nsis` from `package.json`, so a plain
+`dist` run produces the same installer.)
+
+### Verify a Windows build
+
+The artifact must identify as a Nullsoft (NSIS) installer:
+
+```bash
+file dist/ProoflineRecorder-Setup.exe
+# PE32 executable (GUI) … Nullsoft Installer self-extracting archive
+```
+
+Then install it on a Windows machine (or VM) and check the same things as on Linux:
+
+1. The status window appears and the tray process keeps running.
+2. `http://127.0.0.1:43117/ping` in a browser answers `running:true` with the version
+   from `apps/recorder/package.json`.
+3. After "Record steps in a browser" on the web app, the recording window opens
+   (full-screen) with the address bar at the top.
 
 Behavior of the installed app (handled by `main.js`):
 
@@ -294,7 +372,7 @@ win.webContents.openDevTools({ mode: "detach" });
 |---|---|
 | `The SUID sandbox helper binary was found, but is not configured correctly` | Dev runs can't set SUID — the `start` script already sets `ELECTRON_DISABLE_SANDBOX=1`; don't strip it |
 | `Missing X server / DISPLAY` (SSH session) | Electron needs a desktop session; for CI use `xvfb-run -a pnpm --filter @ai-qa/recorder start` |
-| Renderer crashes on NVIDIA machines | `main.js` already appends `--disable-gpu --disable-software-rasterizer` on Linux |
+| Renderer crashes on NVIDIA machines | Relaunch with `--disable-gpu-mode` — default runs use full hardware acceleration (`--ignore-gpu-blocklist`); the flag falls back to software rendering for broken drivers |
 | `libva error: … init failed` in the console | Harmless VA-API probe noise (see section 7) — dev runs can silence it with `LIBVA_MESSAGING_LEVEL=0 pnpm start` |
 | Port 43117 already in use | `ss -ltnp | grep 43117` — kill the stale instance or keep the healthy one |
 | Events not captured on a page | Check DevTools console for injection errors; the script re-injects on every `did-finish-load` navigation |
@@ -358,11 +436,11 @@ windows and injection failures on a customer machine.
 | Browser console shows **`GET http://localhost:43117/ping net::ERR_CONNECTION_REFUSED`** (button stays disabled, downloads stay enabled) | **Nothing is listening on port 43117 — the recorder is not running (or not the fixed build).** A refused connection is NOT a CORS/permission problem (those log CORS errors). In order: (1) run the AppImage from a terminal — the first lines must print `presence endpoint on http://127.0.0.1:43117/ping`; if they don't, the binary is an **outdated build** (source fixes only ship after a rebuild — see the warning at the top of this guide), so rebuild + re-download + re-run; (2) if the launch exits instantly with `another instance is already running… Taking over...`, let it finish — the new build kills the stale instance and relaunches itself; (3) if the AppImage doesn't start at all, check the FUSE row below. Verify with `ss -ltnp \| grep 43117` (must show 127.0.0.1:43117 AND [::1]:43117) and `curl http://127.0.0.1:43117/ping` |
 | `xdg-settings: not found` / `xdg-mime: not found` errors | **Fixed in the current code** — registration is pure file writes. Seeing this means the machine runs an OLD build → rebuild and redistribute |
 | Browser dialog says **"Open xdg-open?"** when clicking *Record steps in a browser* | **This is the browser's own confirmation dialog, not the recorder's code.** Chrome on Linux labels every custom-protocol launcher generically as "xdg-open" (long-standing Chromium behavior — issue 41184476); clicking **Open xdg-open** launches Proofline Recorder normally. Tick *Always allow … to open links of this type* in the dialog to skip future prompts. Firefox and GNOME resolve the real name ("Proofline Recorder") from the registration set written at install — if they still show a generic name, restart the browser after the first install so it re-reads the handler database. NOTE: the Recorder Setup modal's **Uninstall** button does NOT use a deep link anymore — it calls `POST /uninstall` on the presence endpoint directly, so it never triggers this dialog (a "No App Available" after Uninstall means the web app is an outdated build) |
-| `libva error: /usr/lib/…/dri/iHD_drv_video.so init failed` | **Harmless, and now silenced.** Why it appears: Chromium (not our code) probes the system's VA-API video-acceleration driver at startup by dlopen'ing the system `libva` — on machines without an Intel GPU (or with NVIDIA) the Intel driver `iHD_drv_video.so` fails to initialize and libva prints this line. It does NOT mean a missing dependency — the AppImage is fully self-contained and libva is an optional runtime probe. Current builds disable the whole VA-API stack (`--disable-accelerated-video-decode`, `--disable-features=VaapiVideoDecodeLinuxGL,VaapiVideoEncoder,VaapiIgnoreDriverChecks`) and the launcher sets `LIBVA_MESSAGING_LEVEL=0`, so the message is gone. On an old build you can ignore it, or silence it manually: `LIBVA_MESSAGING_LEVEL=0 ./ProoflineRecorder.AppImage` |
+| `libva error: /usr/lib/…/dri/iHD_drv_video.so init failed` | **Harmless, and silenced.** Why it appears: Chromium (not our code) probes the system's VA-API video-acceleration driver at startup by dlopen'ing the system `libva` — on machines without an Intel GPU (or with NVIDIA) the Intel driver `iHD_drv_video.so` fails to initialize and libva prints this line. It does NOT mean a missing dependency — the AppImage is fully self-contained and libva is an optional runtime probe. The launcher sets `LIBVA_MESSAGING_LEVEL=0`, so the message is gone in default (GPU) mode; `--disable-gpu-mode` runs disable the whole VA-API stack (`--disable-accelerated-video-decode`, `--disable-features=VaapiVideoDecodeLinuxGL,VaapiVideoEncoder,VaapiIgnoreDriverChecks`) as well. You can also silence it manually: `LIBVA_MESSAGING_LEVEL=0 ./ProoflineRecorder.AppImage` |
 | `dlopen(): error loading libfuse.so.2` / AppImage won't mount | Minimal distro without FUSE. Either install it (`sudo apt install libfuse2` / `dnf install fuse-libs`) or run without FUSE: `APPIMAGE_EXTRACT_AND_RUN=1 ./ProoflineRecorder.AppImage` |
 | `version 'GLIBC_2.xx' not found` | Old distro + locally-built AppImage. Use the Docker baseline build (section 3, option B) |
 | `Proofline Recorder cannot start: missing system libraries: …` | The Linux wrapper prints the exact list and the fix — install them (e.g. `sudo apt install libgtk-3-0 libnss3 libasound2`) |
-| Blank / black recording window | GPU issue. Linux builds already launch with `--disable-gpu --disable-software-rasterizer`; on Windows/macOS test manually with `--disable-gpu` and confirm via remote DevTools (`chrome://gpu`) |
+| Blank / black recording window, or GPU-heavy page sections missing | Default mode runs with full hardware acceleration (`--enable-gpu --ignore-gpu-blocklist`). If a driver is broken, relaunch with `--disable-gpu-mode` (software rendering); confirm the active mode via the startup log line and remote DevTools (`chrome://gpu`). `[recorder] GPU process gone (…)` in the terminal means the GPU process died and Chromium fell back |
 | Deep link opens browser page instead of app | Protocol registration missing: check both `mimeapps.list` files + `mimeinfo.cache` (Linux) / re-run the installer (Win/Mac); restart the browser afterwards |
 | Web page never detects the recorder (button stays disabled / no green check) even though `/ping` answers in a terminal | The browser is blocking the loopback probe. **Chrome 142+ / Edge 143+ enforce "Local Network Access" (LNA)** — a public page may only fetch `127.0.0.1` after you allow the site's *Local network access* permission: click the site/tune icon left of the address bar → *Site settings* → *Local network access* → *Allow*, then reload. The setup modal shows this hint automatically when the permission is denied, and its **Check again** button re-probes instantly. Other causes: the page is plain HTTP on a LAN address (not a secure context — browsers refuse local detection there; serve the web app over HTTPS or localhost), an extension/proxy intercepting `127.0.0.1`. NOTE: if the console error is `net::ERR_CONNECTION_REFUSED` (not a CORS error), skip this row — the recorder itself is not running; use the refused-connection row above. The page probes all three spellings (`127.0.0.1`, `localhost`, `[::1]`) every 2s, on focus, and on tab visibility, and the endpoint answers CORS plus both the PNA and LNA opt-in headers |
 | A healthy old instance keeps the new build from installing | The single-instance lock means one recorder per machine. A new launch that finds the lock holder **serving `/ping`** exits quietly (normal). If the lock holder is NOT serving (outdated/hung build), the new build terminates it and relaunches itself automatically. Manual fallback: `pkill -f ProoflineRecorder && ./ProoflineRecorder.AppImage` |
@@ -394,6 +472,7 @@ Include: OS + version (`cat /etc/os-release`), how the app was installed, and th
 | **Rebuild after changing recorder source** | `cd apps/recorder && pnpm dist --linux AppImage`, then run the fresh `dist/ProoflineRecorder.AppImage` once |
 | Linux portable build | `./apps/recorder/scripts/build-linux.sh` (Docker, glibc 2.31 floor) |
 | Linux quick build | `cd apps/recorder && pnpm dist --linux AppImage` |
+| Windows build (from Linux, recommended) | `./apps/recorder/scripts/build-windows.sh` (Docker cross-build, Wine inside the image) |
 | Windows build (on Windows) | `pnpm --filter @ai-qa/recorder dist` → `ProoflineRecorder-Setup.exe` |
 | macOS build (on a Mac) | `pnpm --filter @ai-qa/recorder dist` → `ProoflineRecorder.dmg` |
 | Logs from packaged app | launch from terminal with `ELECTRON_ENABLE_LOGGING=1` |

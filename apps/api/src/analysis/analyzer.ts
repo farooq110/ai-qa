@@ -329,6 +329,51 @@ export function extractRouteParams(routes: RouteInfo[], sources: Map<string, str
   });
 }
 
+/**
+ * A components barrel is not the page: follow the name to the file that really defines it, through
+ * "export const OrderPage = Loader(lazy(() => import('../pages/Order')))", "export { default as
+ * OrderPage } from './Order'", "export { OrderPage } from './Order'" and "export * from './Order'"
+ * chains (pages/index.ts -> pages/summary/index.ts -> summaryPage.tsx), so the route's module slice
+ * starts at the page's own code.
+ */
+export function throughBarrel(file: string, name: string, sources: Map<string, string>, all: Set<string>, aliases: AliasRule[], depth = 0): string {
+  const content = sources.get(file) ?? "";
+  const escaped = name.replace(/[$]/g, "\\$&");
+  if (depth > 5 || new RegExp(`\\b(?:function|class|const|let|var)\\s+${escaped}\\b`).test(content) && !new RegExp(`\\bconst\\s+${escaped}\\s*=[^;\\n]*?import\\(`).test(content)) return file;
+  const follow = (specifier: string, as = name) => {
+    const next = resolveImport(specifier, file, all, aliases);
+    return next ? throughBarrel(next, as, sources, all, aliases, depth + 1) : undefined;
+  };
+  const lazy = content.match(new RegExp(`\\bconst\\s+${escaped}\\s*=[^;\\n]*?import\\(\\s*["'\`]([^"'\`]+)`))?.[1];
+  if (lazy) return resolveImport(lazy, file, all, aliases) || file;
+  const asDefault = content.match(new RegExp(`export\\s*\\{[^}]*\\bdefault\\s+as\\s+${escaped}\\b[^}]*\\}\\s*from\\s*["']([^"']+)`))?.[1];
+  if (asDefault) return resolveImport(asDefault, file, all, aliases) || file;
+  for (const match of content.matchAll(/export\s*\{([^}]*)\}\s*from\s*["']([^"']+)["']/g)) {
+    for (const part of match[1].split(",")) {
+      const [original, alias] = part.trim().split(/\s+as\s+/);
+      if ((alias ?? original) === name && original !== "default") return follow(match[2], original) ?? file;
+    }
+  }
+  for (const match of content.matchAll(/export\s*\*\s*from\s*["']([^"']+)["']/g)) {
+    const found = follow(match[1]);
+    if (found && found !== resolveImport(match[1], file, all, aliases) || found && new RegExp(`\\b(?:function|class|const|let|var)\\s+${escaped}\\b`).test(sources.get(found) ?? "")) return found;
+  }
+  return file;
+}
+
+/**
+ * The files an import really brings in. A named import from a barrel ("import { Canvas, Decoration } from
+ * '../components'", where components/index.ts is 50 "export *" lines) brings in the files defining those
+ * names, not the barrel: every page imports the barrel, so it reads as shared noise and is skipped, and
+ * everything behind it would be lost to the slice.
+ */
+export function importTargets(edge: ImportEdge, fromFile: string, sources: Map<string, string>, filePaths: Set<string>, aliases: AliasRule[]): string[] {
+  const target = resolveImport(edge.specifier, fromFile, filePaths, aliases);
+  if (!target) return [];
+  if (!edge.names.length || !/\bexport\s*(?:\*|\{[^}]*\}\s*from)/.test(sources.get(target) ?? "")) return [target];
+  return [...new Set(edge.names.map((name) => throughBarrel(target, name, sources, filePaths, aliases)))];
+}
+
 /** A page file plus its near import neighborhood (BFS, capped), so code context can attach to a route by real file identity. */
 export function importNeighborhood(file: string, sources: Map<string, string>, graph: ImportGraph, hops = 2, cap = 12): string[] {
   const allFiles = new Set(sources.keys());
@@ -338,8 +383,10 @@ export function importNeighborhood(file: string, sources: Map<string, string>, g
     const next: string[] = [];
     for (const current of frontier) {
       for (const edge of graph.importsByFile.get(current) ?? []) {
-        const target = resolveImport(edge.specifier, current, allFiles, graph.aliases);
-        if (target && !result.includes(target)) { result.push(target); next.push(target); if (result.length >= cap) break; }
+        for (const target of importTargets(edge, current, sources, allFiles, graph.aliases)) {
+          if (!result.includes(target)) { result.push(target); next.push(target); if (result.length >= cap) break; }
+        }
+        if (result.length >= cap) break;
       }
       if (result.length >= cap) break;
     }
@@ -348,11 +395,16 @@ export function importNeighborhood(file: string, sources: Map<string, string>, g
   return result;
 }
 
-/** How many of `entries`' reachable sets a file falls into — a shared/leaf file (e.g. a UI button) has high fan-in across unrelated route entries, while a module-specific file has low fan-in. */
+/**
+ * How many entries' near import neighborhoods (two hops) a file falls into — a shared/leaf file (e.g. a UI
+ * button) is used directly by many unrelated pages, while a module-specific file is not. Two hops, not
+ * full reachability: in a tightly coupled app (a global store importing every component) every page
+ * reaches nearly every file, and "shared" would swallow the whole app.
+ */
 export function fanIn(graph: ImportGraph, entries: Array<{ file: string; sources: Map<string, string> }>): Map<string, number> {
   const counts = new Map<string, number>();
   for (const { file, sources } of entries) {
-    const reachable = reachableFromRoutes([{ path: "", page: "", feature: "", file }], sources, graph);
+    const reachable = importNeighborhood(file, sources, graph, 2, 400);
     for (const path of reachable) counts.set(path, (counts.get(path) ?? 0) + 1);
   }
   return counts;
@@ -386,8 +438,9 @@ export function sliceModule(
       result.push(file);
       usedChars += content.length;
       for (const edge of graph.importsByFile.get(file) ?? []) {
-        const target = resolveImport(edge.specifier, file, allFiles, graph.aliases);
-        if (target && !seen.has(target)) { seen.add(target); next.push(target); }
+        for (const target of importTargets(edge, file, sources, allFiles, graph.aliases)) {
+          if (!seen.has(target)) { seen.add(target); next.push(target); }
+        }
       }
     }
     if (usedChars >= budgetChars) break;

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, WebContentsView, ipcMain } = require("electron");
 const http = require("node:http");
 const { readFileSync, writeFileSync, mkdirSync, copyFileSync, chmodSync, statSync, existsSync, rmSync, readdirSync } = require("node:fs");
 const { homedir } = require("node:os");
@@ -17,23 +17,58 @@ const launchedAtLogin = (() => {
 })();
 const backgroundLaunch = process.argv.includes(BACKGROUND_FLAG) || launchedAtLogin;
 
-// Linux compatibility: minimal distros ship without the SUID chrome-sandbox helper,
-// GPU drivers (e.g. NVIDIA) may be missing or incompatible, and software
-// rasterization can crash on stripped-down systems. These switches keep Chromium
-// launching reliably across all Linux distributions — with or without a GPU.
-// Video-acceleration paths are disabled too: the VA-API probe dlopens the system
-// libva/Intel driver and prints "libva error: … init failed" on machines without
-// an Intel GPU (harmless, but noisy). The recorder records DOM events — it never
-// needs hardware video decode — so the whole VA-API stack is switched off and the
-// app stays self-contained (no system library dependencies).
-// Windows/macOS keep their native sandboxes and GPU acceleration.
-if (process.platform === "linux") {
-  app.commandLine.appendSwitch("no-sandbox");
+// ---------------------------------------------------------------------------
+// Graphics / GPU configuration. Must run BEFORE app.whenReady() — Chromium
+// reads these switches once, when the GPU process starts, so later changes
+// have no effect.
+//
+// Default: FULL hardware acceleration on every platform. The recorder renders
+// whatever sites the user records — including heavy WebGL / 3D pages — so the
+// GPU stack is deliberately switched ON:
+//   --enable-gpu           explicitly request hardware acceleration
+//   --ignore-gpu-blocklist run past Chromium's conservative driver blocklist,
+//                          which otherwise software-renders many perfectly
+//                          capable Linux/NVIDIA/AMD/VM GPU drivers
+// (The previous build force-disabled the GPU — and even the software
+// rasterizer — on Linux, which is exactly why GPU-heavy pages rendered blank
+// or broken there while Windows/macOS worked.)
+//
+// Troubleshooting fallback: launch with --disable-gpu-mode (headless boxes,
+// VMs without 3D acceleration, broken/blacklisted drivers) to fall back to
+// software rendering (--disable-gpu). SwiftShader stays available in that
+// mode so pages still draw; hardware video decode and the whole VA-API stack
+// are switched off along with it.
+// ---------------------------------------------------------------------------
+const DISABLE_GPU_FLAG = "--disable-gpu-mode";
+const softwareRendering = process.argv.includes(DISABLE_GPU_FLAG);
+
+if (softwareRendering) {
   app.commandLine.appendSwitch("disable-gpu");
-  app.commandLine.appendSwitch("disable-software-rasterizer");
   app.commandLine.appendSwitch("disable-accelerated-video-decode");
   app.commandLine.appendSwitch("disable-features", "VaapiVideoDecodeLinuxGL,VaapiVideoEncoder,VaapiIgnoreDriverChecks");
+  console.log(`[recorder] GPU: software rendering requested via ${DISABLE_GPU_FLAG}`);
+} else {
+  app.commandLine.appendSwitch("enable-gpu");
+  app.commandLine.appendSwitch("ignore-gpu-blocklist");
+  console.log("[recorder] GPU: hardware acceleration enabled (default) — launch with --disable-gpu-mode to fall back to software rendering");
 }
+
+// Linux safety: minimal distros ship without the SUID chrome-sandbox helper,
+// which makes Chromium abort instead of launching. --no-sandbox keeps the app
+// starting reliably across every Linux distribution, with or without a GPU
+// (the packaged launcher in scripts/remove-chrome-sandbox.js adds it too).
+// Windows/macOS keep their native sandboxes.
+if (process.platform === "linux") app.commandLine.appendSwitch("no-sandbox");
+
+// Observability: pushing past the driver blocklist can expose marginal GPU
+// drivers. Chromium then restarts the GPU process or silently falls back to
+// software rendering — this line leaves a visible trace in the console so
+// "why did my 3D page go slow/blank" has an answer.
+app.on("child-process-gone", (_event, details) => {
+  if (details?.type === "GPU") {
+    console.log(`[recorder] GPU process gone (reason: ${details.reason ?? "unknown"}, exitCode: ${details.exitCode ?? "n/a"}) — Chromium restarts it or falls back to software rendering`);
+  }
+});
 
 // Dev machines can't set the SUID sandbox helper (needs root). Packaged installers
 // configure Chromium's sandbox correctly, so this only applies to source runs.
@@ -172,7 +207,7 @@ function installLinuxIntegration(appImagePath) {
 }
 
 let mainWindow = null; // the app's own window is hidden; recording windows carry the UI
-let session = null; // { id, project, api, token, target, win, events, pushTimer, pushCount, ended }
+let session = null; // { id, project, api, token, target, win, content, events, pushTimer, pushCount, ended }
 let statusWindow = null;
 let quitting = false;
 
@@ -234,6 +269,39 @@ function handlePresenceRequest(request, response) {
     const run = () => { void stopAndUninstall(); };
     if (typeof response.on === "function") response.on("finish", () => setTimeout(run, 250));
     else setTimeout(run, 500);
+    return;
+  }
+  // Browser-friendly launch: the web app POSTs the recording session here
+  // instead of navigating to proofline-recorder://…, which on Linux routes
+  // through xdg-open — the repeated "Open xdg-open?" confirmation, and the
+  // "resource not available" failure when the protocol registration is stale.
+  // A loopback POST needs no OS handler at all, so recording works under ANY
+  // packaging (AppImage, Flatpak, system install) and always opens Electron's
+  // own bundled Chromium — never an external system browser.
+  if (request.method === "POST" && requestPath === "/record") {
+    let body = "";
+    request.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 8192) { request.destroy(); return; }
+    });
+    request.on("end", () => {
+      let link = "";
+      try { link = String(JSON.parse(body).link ?? ""); } catch {}
+      response.setHeader("Content-Type", "application/json");
+      if (!link.startsWith(`${PROTOCOL}://`)) {
+        response.writeHead(400);
+        response.end(JSON.stringify({ ok: false, error: `link must be a ${PROTOCOL}:// URL` }));
+        return;
+      }
+      // Answer first, launch second: the browser must see the 200 even if
+      // window creation is slow (cold GPU init on first recording).
+      response.writeHead(200);
+      response.end(JSON.stringify({ ok: true, app: PROTOCOL, version: app.getVersion(), launching: true }));
+      setTimeout(() => {
+        try { handleDeepLink(link); }
+        catch (error) { console.error("[recorder] record launch failed:", error.message); }
+      }, 50);
+    });
     return;
   }
   if ((request.method === "GET" || request.method === "HEAD") && (requestPath === "/ping" || requestPath === "/")) {
@@ -559,9 +627,10 @@ async function startRecording(parsed) {
   };
 
   session.win = createRecordingWindow(session);
+  session.content = session.win.content;
   // The status window's job is done once a recording opens.
   if (statusWindow && !statusWindow.isDestroyed()) statusWindow.close();
-  await session.win.loadURL(session.target);
+  await session.content.webContents.loadURL(session.target);
 
   await fetchJson(`${session.api}/v1/projects/${session.project}/recordings/${session.sessionId}/attach`, session.token, { method: "POST" });
 
@@ -569,33 +638,130 @@ async function startRecording(parsed) {
   console.log(`[recorder] recording ${session.sessionId} → ${session.target}`);
 }
 
+/** Height of the locked address bar shown above the recorded page — only the
+ *  vertical space the bar itself needs; the recorded page gets everything else. */
+const TOOLBAR_HEIGHT = 38;
+
+/** Address-bar toolbar HTML. The ORIGIN is display-only (locked); only the path
+ *  after it is editable. Navigations go through the main process, which enforces
+ *  the same-origin rule — the base URL can never change. */
+function toolbarHtml(origin, initialPath) {
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+    body { display: flex; align-items: center; background: #0f1418; border-bottom: 1px solid #23313a; padding: 0 8px; font-family: system-ui, sans-serif; }
+    .origin { flex: none; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #7fa396; font-size: 12px; padding: 0 5px 0 3px; }
+    .sep { flex: none; color: #52646d; font-size: 12px; }
+    input { flex: 1; min-width: 60px; height: 26px; border: 1px solid #2b3d47; border-radius: 5px; background: #131b21; color: #d7e2dc; font: 12px ui-monospace, monospace; padding: 0 9px; outline: none; }
+    input:focus { border-color: #1f7265; }
+    button { flex: none; margin-left: 7px; height: 26px; padding: 0 12px; border: 0; border-radius: 5px; background: #1f7265; color: #fff; font-size: 12px; cursor: pointer; }
+  </style></head><body>
+  <span class="origin" title="${origin} (locked)">${origin}</span><span class="sep">/</span>
+  <input id="path" value="${initialPath.replace(/"/g, "&quot;")}" spellcheck="false" aria-label="Path within ${origin}" />
+  <button id="go" title="Navigate to this path (Enter)">Go</button>
+  <script>
+    const { ipcRenderer } = require("electron");
+    const input = document.getElementById("path");
+    const submit = () => { const value = input.value.trim(); if (value) ipcRenderer.send("navigate", value); };
+    input.addEventListener("keydown", (event) => { if (event.key === "Enter") submit(); });
+    document.getElementById("go").addEventListener("click", submit);
+    // Keep the field in sync with the page — but never clobber what the user is typing.
+    ipcRenderer.on("location", (_event, path) => { if (document.activeElement !== input) input.value = path; });
+  </script>
+  </body></html>`;
+}
+
 function createRecordingWindow(rec) {
   const win = new BrowserWindow({
     width: 1366,
     height: 900,
+    // Open in full-screen by default — F11 / the window menu exits it, and the
+    // layout below tracks every geometry change in either direction.
+    fullscreen: true,
     title: `Proofline Recorder — ${rec.target}`,
-    autoHideMenuBar: true
+    autoHideMenuBar: true,
+    backgroundColor: "#0f1418"
   });
+  // Base URL is locked at session start: every navigation must stay on this origin.
+  const baseOrigin = new URL(rec.target).origin;
+  const initialPath = new URL(rec.target).pathname + new URL(rec.target).search + new URL(rec.target).hash;
+
+  // The window hosts TWO stacked views: the compact header/address bar pinned to
+  // the very top (TOOLBAR_HEIGHT tall, full width) and the recorded page filling
+  // every remaining pixel. The header is its own view, so the recorded app
+  // cannot reach or move it.
+  const header = new WebContentsView({ webPreferences: { nodeIntegration: true, contextIsolation: false } });
+  const content = new WebContentsView({ webPreferences: {} });
+  win.contentView.addChildView(header);
+  win.contentView.addChildView(content);
+  header.webContents.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(toolbarHtml(baseOrigin, initialPath)));
+
+  // Responsive layout: relayout whenever the window's content size changes.
+  // Events cover the normal path; the watchdog catches window managers that
+  // deliver resize/full-screen events late or not at all — setBounds only runs
+  // when the size actually changed, so the idle cost is one integer compare.
+  let lastWidth = -1;
+  let lastHeight = -1;
+  const layout = () => {
+    const [width, height] = win.getContentSize();
+    if (width === lastWidth && height === lastHeight) return;
+    lastWidth = width;
+    lastHeight = height;
+    header.setBounds({ x: 0, y: 0, width, height: TOOLBAR_HEIGHT });
+    content.setBounds({ x: 0, y: TOOLBAR_HEIGHT, width, height: Math.max(0, height - TOOLBAR_HEIGHT) });
+  };
+  layout();
+  win.on("resize", layout);
+  win.on("maximize", layout);
+  win.on("unmaximize", layout);
+  win.on("enter-full-screen", layout);
+  win.on("leave-full-screen", layout);
+  const layoutWatchdog = setInterval(() => {
+    if (win.isDestroyed()) { clearInterval(layoutWatchdog); return; }
+    layout();
+  }, 250);
+  win.on("closed", () => clearInterval(layoutWatchdog));
+
+  // Address-bar navigation: resolve the typed path against the locked origin and
+  // refuse anything that would leave it (the base URL can never change).
+  header.webContents.ipc.on("navigate", (_event, typed) => {
+    let next;
+    try { next = new URL(typed.startsWith(baseOrigin) ? typed : "/" + typed.replace(/^\/+/, ""), baseOrigin); } catch { return; }
+    if (next.origin !== baseOrigin) return;
+    const current = content.webContents.getURL();
+    if (current && next.toString() === current) return;
+    content.webContents.loadURL(next.toString()).catch(() => undefined);
+  });
+  // Keep the bar's path field in sync with real navigations (full loads and SPA route changes).
+  const syncBar = () => {
+    try {
+      const url = new URL(content.webContents.getURL());
+      if (url.origin !== baseOrigin) return;
+      header.webContents.send("location", url.pathname + url.search + url.hash);
+    } catch {}
+  };
+  content.webContents.on("did-navigate", syncBar);
+  content.webContents.on("did-navigate-in-page", syncBar);
+
   // Registered BEFORE loadURL — did-finish-load has already fired by the time
   // loadURL resolves, so a late handler would never inject the capture script.
   // It also re-injects after every full navigation.
-  win.webContents.on("did-finish-load", () => {
-    win.webContents.executeJavaScript(RECORDER_SCRIPT).catch(() => undefined);
+  content.webContents.on("did-finish-load", () => {
+    content.webContents.executeJavaScript(RECORDER_SCRIPT).catch(() => undefined);
   });
-  win.on("page-title-updated", (event) => event.preventDefault());
   win.on("closed", () => {
     // Closing the recorded page ends only the local window. The platform session stays
     // open so the web UI keeps its "Stop Recording" control — the user stops (and
     // imports) from there. No status window is spawned; the app stays resident silently.
     if (session && session.win === win && !session.ended) void endSession(session, false);
   });
-  return win;
+  return { win, content };
 }
 
 async function pushEvents(rec) {
-  if (rec.ended || rec.win?.isDestroyed()) return;
+  if (rec.ended || !rec.content || rec.content.webContents.isDestroyed()) return;
   try {
-    const taken = await rec.win.webContents.executeJavaScript("window.__prooflineTakeEvents ? window.__prooflineTakeEvents() : []");
+    const taken = await rec.content.webContents.executeJavaScript("window.__prooflineTakeEvents ? window.__prooflineTakeEvents() : []");
     rec.events.push(...taken);
     // Drop consecutive duplicates (same action + same target), matching the platform's rule.
     rec.events = rec.events.filter((event, index) => index === 0 || event.action !== rec.events[index - 1].action || event.target !== rec.events[index - 1].target);
@@ -603,7 +769,7 @@ async function pushEvents(rec) {
     rec.pushCount += 1;
     const body = { events: rec.events };
     if (rec.pushCount % SCREENSHOT_EVERY_PUSHES === 0) {
-      const image = await rec.win.webContents.capturePage();
+      const image = await rec.content.webContents.capturePage();
       body.screenshot = image.toDataURL("image/jpeg", 0.5);
     }
     await fetchJson(`${rec.api}/v1/projects/${rec.project}/recordings/${rec.sessionId}/events`, rec.token, { method: "PUT", body });

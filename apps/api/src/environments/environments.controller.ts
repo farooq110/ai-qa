@@ -1,3 +1,4 @@
+import { fixtureSets, type RouteFixtures } from "@ai-qa/test-dsl";
 import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from "@nestjs/common";
 import { EnvironmentsService } from "./environments.service";
 import { AuthGuard } from "../auth/auth.guard";
@@ -35,15 +36,17 @@ export class EnvironmentsController {
     return this.environmentsService.delete(user, projectId, environmentId);
   }
 
-  /** { "/route": { param: "value" } } of strings only; anything else is rejected. */
-  private fixtures(value: unknown): Record<string, Record<string, string>> | null | undefined {
+  /** { "/route": { param: "value" } } or { "/route": [{ param: "value" }, ...] } of strings only; anything else is rejected. */
+  private fixtures(value: unknown): RouteFixtures | null | undefined {
     if (value === undefined) return undefined;
     if (value === null) return null;
-    if (typeof value !== "object" || Array.isArray(value)) throw new BadRequestException("routeFixtures must be an object of route -> { parameter: value }");
-    const out: Record<string, Record<string, string>> = {};
+    if (typeof value !== "object" || Array.isArray(value)) throw new BadRequestException("routeFixtures must be an object of route -> { parameter: value } (or a list of them)");
+    const out: RouteFixtures = {};
     for (const [route, params] of Object.entries(value as Record<string, unknown>)) {
-      if (!params || typeof params !== "object" || Array.isArray(params)) throw new BadRequestException(`routeFixtures["${route}"] must be an object of parameter: value`);
-      out[route] = Object.fromEntries(Object.entries(params as Record<string, unknown>).map(([name, val]) => [name, String(val)]));
+      const list = Array.isArray(params) ? params : [params];
+      if (!list.length || list.some((set) => !set || typeof set !== "object" || Array.isArray(set))) throw new BadRequestException(`routeFixtures["${route}"] must be { parameter: value } or a non-empty list of them`);
+      const sets = fixtureSets(list);
+      out[route] = Array.isArray(params) ? sets : sets[0];
     }
     return out;
   }

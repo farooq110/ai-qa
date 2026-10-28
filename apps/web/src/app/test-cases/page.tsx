@@ -18,17 +18,20 @@ import { InfoTooltip } from "@/components/info-tooltip";
 import { useFitViewport } from "@/components/use-fit-viewport";
 import { api, apiUrl, categoryLabels, fmtRelative, shortSha, statusClass, statusLabels } from "@/lib/api";
 import { can, requireSubscription, useMe, useProjects, useToast } from "@/lib/hooks";
-import { clearRecorderInstalledFlag, persistRecorderInstalled, readRecorderInstalledFlag, useRecorderPresence } from "@/lib/use-recorder-presence";
+import { clearRecorderInstalledFlag, launchRecorder, persistRecorderInstalled, readRecorderInstalledFlag, useRecorderPresence } from "@/lib/use-recorder-presence";
 import { PERMISSIONS } from "@ai-qa/domain";
 
 /**
- * Hands the proofline-recorder:// link to the OS. Only ever called from a direct user
- * click (start button, retry, picker) so the browser allows the external navigation;
- * when the recorder isn't installed the OS shows its own dialog and the inline setup
- * help appears in the record bar instead.
+ * Hands the recording session to the recorder. Preferred path: a loopback POST
+ * straight to the RUNNING recorder (Electron's own Chromium window opens — no
+ * external browser, no OS protocol handler, no "Open xdg-open?" confirmation on
+ * Linux). Only when no recorder answers (not running, or an old build without
+ * the /record endpoint) does it fall back to the proofline-recorder:// deep
+ * link. Always user-gesture driven (start button, retry, picker).
  */
-function launchDeepLink(link: string) {
-  window.location.href = link;
+async function launchDeepLink(link: string) {
+  const launched = await launchRecorder(link);
+  if (!launched) window.location.href = link;
 }
 
 /** Recording-session status poll interval. The poller is a self-scheduling
@@ -934,7 +937,7 @@ function TestEditor({ projectId, onProjectChange, projectOptions, mode, test, cl
       setRecording({ sessionId: result.sessionId, deepLink: result.deepLink, status: result.status, count: 0 });
       // The old one-click workflow: open the recorder immediately. Setup help is never
       // auto-shown — the Recorder Setup button inside the Steps box opens it on demand.
-      launchDeepLink(result.deepLink);
+      void launchDeepLink(result.deepLink);
       // First status check after one full interval, then one every 5s (never
       // overlapping — see pollRecordingSession).
       pollTimer.current = window.setTimeout(() => { void pollRecordingSession(result.sessionId, epoch); }, RECORDING_POLL_INTERVAL_MS);
@@ -1321,7 +1324,7 @@ function RegionPickerModal({ projectId, onApply, onClose, onError }: {
       const result = await api<{ sessionId: string; deepLink: string }>(`/v1/projects/${projectId}/recordings`, { method: "POST", body: { url: env.url, apiUrl } });
       setSession(result.sessionId);
       // The screenshot comes from the Proofline Recorder desktop app — open it for this session.
-      launchDeepLink(result.deepLink);
+      void launchDeepLink(result.deepLink);
       await refresh(result.sessionId);
     } catch (error) {
       onError(error instanceof Error ? error.message : "Unable to open the picker browser");

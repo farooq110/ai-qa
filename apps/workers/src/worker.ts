@@ -6,8 +6,8 @@ import { PrismaClient } from "@prisma/client";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { chromium, type Page } from "playwright";
 import sharp from "sharp";
-import { evaluateResponseRule, installHostLimiter, isAuthRoute, matchesApiCall, needsAnonymousSession, onLoginScreen, parseResponseRule, sessionKeeper, type LoginCredentials, type SessionKeeper, type TestDefinition, type TestStep } from "@ai-qa/test-dsl";
-import { loadCredentials, loadFixtureVars, loadSessionState, sessionStore } from "./environment";
+import { evaluateResponseRule, installHostLimiter, isAuthRoute, matchesApiCall, needsAnonymousSession, onLoginScreen, parseResponseRule, sessionKeeper, testVariants, type LoginCredentials, type SessionKeeper, type TestDefinition, type TestStep } from "@ai-qa/test-dsl";
+import { loadCredentials, loadFixtureVars, loadRouteFixtures, loadSessionState, sessionStore } from "./environment";
 import { assertNotVisible, firstPage, runRecovering } from "./step-helpers";
 export { firstPage, runRecovering } from "./step-helpers";
 import { attachBypassHeaders, loadBypassHeaders } from "./bypass-headers.js";
@@ -71,6 +71,7 @@ const log = (event: string, detail?: Record<string, unknown>) => console.info(JS
 export async function openRunSession(projectId: string, environmentUrl: string) {
   const credentials = await loadCredentials(prisma, projectId, environmentUrl);
   const fixtureVars = await loadFixtureVars(prisma, projectId, environmentUrl);
+  const routeFixtures = await loadRouteFixtures(prisma, projectId, environmentUrl);
   const savedSession = credentials ? await loadSessionState(prisma, projectId, environmentUrl) : undefined;
   const bypass = await loadBypassHeaders(prisma, projectId, process.env.JWT_SECRET ?? "");
   const browser = await chromium.launch({ headless: true });
@@ -85,7 +86,7 @@ export async function openRunSession(projectId: string, environmentUrl: string) 
   const keeper = sessionKeeper(context, { baseUrl: environmentUrl, credentials, limiter, store: sessionStore(prisma, projectId, environmentUrl), log });
   const loginStatus = await keeper.login(Boolean(savedSession));
   return {
-    browser, context, limiter, keeper, credentials, fixtureVars, loginStatus,
+    browser, context, limiter, keeper, credentials, fixtureVars, routeFixtures, loginStatus,
     /** A fresh logged-out context: login / sign-up tests must never touch the run's shared session. */
     anonymousContext: async () => (await newContext()).context,
     close: async () => { await keeper.save(); await browser.close().catch(() => undefined); }
@@ -464,9 +465,44 @@ async function assertResponseRule(page: Page, step: TestStep, meta?: StepMeta): 
   if (meta) meta.matched = { by: "app response", loose: false };
 }
 
+/** An XPath string literal for any text (quotes included). */
+const xpathText = (text: string) => (text.includes('"') ? `concat("${text.split('"').join(`", '"', "`)}")` : `"${text}"`);
+
+/**
+ * Click `target` inside the one table row, card or list item that shows `within` (a record's own text):
+ * the smallest element holding both the record's text and the control, so "Delete" lands on that
+ * record's row, never on the first row of the page. The control is either shown in the row or behind
+ * the row's "..." menu. Polls until the record has appeared in the list.
+ */
+async function clickInRow(page: Page, within: string, target: string, timeoutMs: number, meta?: StepMeta) {
+  const text = xpathText(within);
+  const name = xpathText(target);
+  const control = `.//*[(self::button or self::a or @role='button' or @role='link' or @role='menuitem') and (normalize-space(.)=${name} or @aria-label=${name} or @title=${name})]`;
+  const rowHolding = (inner: string) => `xpath=//*[contains(normalize-space(.), ${text}) and ${inner}][not(.//*[contains(normalize-space(.), ${text}) and ${inner}])]`;
+  const visible = (locator: ReturnType<Page["locator"]>) => locator.and(page.locator(":visible"));
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const direct = visible(page.locator(rowHolding(control))).first();
+    if (await direct.count()) {
+      await visible(direct.locator(`xpath=${control}`)).first().click({ timeout: 5_000 });
+      if (meta) meta.matched = { by: "row control", loose: false };
+      return;
+    }
+    const menuRow = visible(page.locator(rowHolding(".//*[@aria-haspopup]"))).first();
+    if (await menuRow.count()) {
+      await visible(menuRow.locator("xpath=.//*[@aria-haspopup]")).last().click({ timeout: 5_000 });
+      await visible(page.getByRole("menuitem", { name: target, exact: true })).first().click({ timeout: 5_000 });
+      if (meta) meta.matched = { by: "row menu", loose: false };
+      return;
+    }
+    await page.waitForTimeout(250);
+  }
+  throw new Error(`No row showing "${within}" has a "${target}" control`);
+}
+
 async function executeStep(page: Page, step: TestStep, baseUrl: string, credentials?: EnvCredentials | null, meta?: StepMeta) {
   // Captured variables ({{name}}) resolve once here, for every action.
-  step = { ...step, target: interpolate(step.target, meta), value: interpolate(step.value, meta) };
+  step = { ...step, target: interpolate(step.target, meta), value: interpolate(step.value, meta), ...(step.within ? { within: interpolate(step.within, meta) } : {}) };
   const timeout = { timeout: stepTimeoutMs };
   // Many apps render the same text twice (a mobile-only card plus a desktop table, each toggled by a
   // CSS breakpoint): .first() in DOM order can resolve to the one that's correctly hidden at this
@@ -531,6 +567,7 @@ async function executeStep(page: Page, step: TestStep, baseUrl: string, credenti
     meta?.vars.set(variable, match[1] ?? match[0]);
     return;
   }
+  if (step.action === "click" && step.within) return clickInRow(page, step.within, step.target, stepTimeoutMs, meta);
   if (step.action === "click") {
     // Recorder-captured css: targets replay via locator directly.
     if (step.target.startsWith("css:")) return page.locator(step.target.slice(4)).first().click(timeout);
@@ -981,18 +1018,39 @@ export async function processPlan(planId: string, job: Job, token?: string) {
     // Login / forgot-password / sign-up tests need a logged-out browser, and each gets a fresh one:
     // the plan context holds the session, and a sign-in test would log a shared anonymous context in.
     const anonymous = needsAnonymousSession(definition);
-    let result: Awaited<ReturnType<typeof runTestCase>>;
-    await limiter.waitUntilReady(); // the budget is per IP, so the main context's view covers anonymous ones too
-    if (anonymous) {
-      const testContext = await session.anonymousContext();
-      try {
-        result = await runTestCase(testContext, runnable, planId, item.testCaseId, plan.environmentUrl, credentials, fixtureVars, true);
-      } finally {
-        await testContext.close().catch(() => undefined);
+    const runOnce = async (vars: Map<string, string>) => {
+      await limiter.waitUntilReady(); // the budget is per IP, so the main context's view covers anonymous ones too
+      if (anonymous) {
+        const testContext = await session.anonymousContext();
+        try {
+          return await runTestCase(testContext, runnable, planId, item.testCaseId, plan.environmentUrl, credentials, vars, true);
+        } finally {
+          await testContext.close().catch(() => undefined);
+        }
       }
-    } else {
       // A long plan outlives a short-lived token: recover the session and rerun instead of failing the rest.
-      result = (await runRecovering(keeper, () => runTestCase(session.context, runnable, planId, item.testCaseId, plan.environmentUrl, credentials, fixtureVars, false), firstPage(definition))).result;
+      return (await runRecovering(keeper, () => runTestCase(session.context, runnable, planId, item.testCaseId, plan.environmentUrl, credentials, vars, false), firstPage(definition))).result;
+    };
+    // A route with a list of parameter sets (one per 3D model, say): the test runs once per set, and the
+    // item fails when any set fails - with each set's own result kept for the run page.
+    const variants = testVariants(definition.steps, session.routeFixtures);
+    let result: Awaited<ReturnType<typeof runTestCase>>;
+    let variantResults: Array<{ label: string; values: Record<string, string>; status: string; error?: string; durationMs: number }> | undefined;
+    const variantLogs: unknown[] = [];
+    if (variants.length) {
+      variantResults = [];
+      for (const [index, variant] of variants.entries()) {
+        const variantStart = Date.now();
+        const outcome = await runOnce(new Map([...fixtureVars, ...Object.entries(variant.values)]));
+        variantResults.push({ label: variant.label, values: variant.values, status: outcome.status, ...(outcome.error ? { error: outcome.error } : {}), durationMs: Date.now() - variantStart });
+        variantLogs.push({ variant: variant.label, result: { ...outcome, screenshotBuffer: undefined } });
+        if (outcome.screenshotBuffer) await createArtifact(planId, item.testCaseId, "SCREENSHOT", `${item.testCaseId}-set${index + 1}-failure.png`, outcome.screenshotBuffer, "image/png");
+        await prisma.executionPlanItem.update({ where: { executionPlanId_testCaseId: { executionPlanId: planId, testCaseId: item.testCaseId } }, data: { variants: variantResults as never } }).catch(() => undefined);
+      }
+      const failures = variantResults.filter((entry) => entry.status !== "PASSED");
+      result = { status: failures.length ? "FAILED" : "PASSED", steps: [], ...(failures.length ? { error: `${failures.length} of ${variantResults.length} parameter sets failed. ${failures[0].label}: ${failures[0].error ?? "failed"}` } : {}) };
+    } else {
+      result = await runOnce(fixtureVars);
     }
     // Name the root cause: a logged-in test failing after the plan's login failed is a credentials problem, not an app bug.
     if (result.status === "FAILED" && keeper.status() === "failed" && !anonymous) {
@@ -1005,13 +1063,14 @@ export async function processPlan(planId: string, job: Job, token?: string) {
         status: result.status,
         errorMessage: result.error,
         durationMs: finishedAt.getTime() - startedAt.getTime(),
-        finishedAt
+        finishedAt,
+        ...(variantResults ? { variants: variantResults as never } : {})
       }
     });
     if (result.screenshotBuffer) {
       await createArtifact(planId, item.testCaseId, "SCREENSHOT", `${item.testCaseId}-failure.png`, result.screenshotBuffer, "image/png");
     }
-    const logBody = Buffer.from(JSON.stringify({ title: item.testCase.title, result }, null, 2), "utf8");
+    const logBody = Buffer.from(JSON.stringify({ title: item.testCase.title, result: { ...result, screenshotBuffer: undefined }, ...(variantLogs.length ? { variants: variantLogs } : {}) }, null, 2), "utf8");
     await createArtifact(planId, item.testCaseId, "LOG", `${item.testCaseId}-steps.json`, logBody, "application/json");
     if (result.status === "PASSED") passed += 1; else failed += 1;
   }

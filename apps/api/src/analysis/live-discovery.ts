@@ -13,7 +13,7 @@
 import { chromium, type Page, type Response } from "playwright";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { diffTextSnapshots, isAuthRoute, isNoiseText, installHostLimiter, sessionKeeper, type LoginCredentials, type SessionStore } from "@ai-qa/test-dsl";
+import { diffTextSnapshots, firstFixtures, isAuthRoute, isNoiseText, installHostLimiter, sessionKeeper, type LoginCredentials, type SessionStore } from "@ai-qa/test-dsl";
 import { decryptField } from "../common/crypto.util";
 import { MAX_RESPONSE_BYTES, summarizeResponse, type ResponseShape } from "./response-shape";
 
@@ -35,6 +35,8 @@ export interface DiscoveredPage {
   labelPairs: Array<{ input: string; label: string }>;
   /** First 600 chars of visible page text. */
   pageText: string;
+  /** Short texts of the page's own elements (outside the navigation chrome), at most 80: what the page is matched to its source file by. */
+  texts?: string[];
   /** Relative path of a page screenshot, when artifact storage is available. */
   screenshotPath?: string;
   /** The page showed a login screen instead of its own content; controls are not trustworthy. */
@@ -96,7 +98,8 @@ export function discoveryAuth(environment: {
   routeFixtures: unknown;
 }): DiscoveryAuth {
   const secret = process.env.JWT_SECRET ?? "";
-  const auth: DiscoveryAuth = { fixtures: (environment.routeFixtures ?? {}) as DiscoveryAuth["fixtures"] };
+  // Several sets for a route (one per 3D model, say): the crawl reads the page with the first.
+  const auth: DiscoveryAuth = { fixtures: firstFixtures(environment.routeFixtures) };
   if (environment.usernameEnc && environment.usernameIv && environment.usernameTag && environment.passwordEnc && environment.passwordIv && environment.passwordTag) {
     try {
       auth.credentials = {
@@ -200,8 +203,21 @@ export async function readPage(page: Page) {
         options: Array.from((sel as HTMLSelectElement).options).map((option) => clean(option.textContent || "")).filter(Boolean).slice(0, 10)
       }))
       .slice(0, 8);
+    // Every short text the page itself shows (table headers, field captions, messages): the phrases a
+    // page is later matched to its source file by. Leaf elements only, outside the navigation chrome.
+    const ownText: string[] = [];
+    const seenText = new Set<string>();
+    for (const el of Array.from(document.querySelectorAll("body *"))) {
+      if (ownText.length >= 80) break;
+      if (el.children.length || !ownContent(el) || ["SCRIPT", "STYLE", "NOSCRIPT"].includes(el.tagName)) continue;
+      const text = clean(el.textContent || "");
+      if (text.length < 3 || text.length > 60 || seenText.has(text.toLowerCase())) continue;
+      seenText.add(text.toLowerCase());
+      ownText.push(text);
+    }
     return {
       title: clean(document.title),
+      texts: ownText,
       navItems: texts("nav a, header a, aside a, [role=navigation] a", 15),
       buttons: texts("button, [role=button], a.btn", 20, ownContent),
       inputs,
@@ -552,12 +568,26 @@ const overlap = (a: ControlBehavior, b: ControlBehavior) => a.requestsFired.filt
 export const strip = ({ signature: _signature, ...entry }: DiscoveredPage & { signature?: string }): DiscoveredPage => entry;
 
 /** Open one URL and read it. Null when the page failed to load. */
+/** The whole visible page is one short loading message. */
+const STILL_LOADING = /^.{0,60}\b(?:loading|authenticating|please wait|redirecting|checking)\b.{0,30}$/i;
+const LOADING_RETRIES = 4;
+
 export async function capturePage(pg: Page, baseUrl: string, route: string, requested: string, values?: Record<string, string>): Promise<(DiscoveredPage & { signature: string }) | null> {
   const url = new URL(requested, baseUrl).toString();
   try {
     await pg.goto(url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
     await pg.waitForTimeout(SETTLE_MS);
-    const { hasPassword, hasDialog, ...data } = await readPage(pg);
+    let read = await readPage(pg);
+    // A page that only says "Authenticating..." / "Loading..." - or shows nothing to use yet (a heavy app
+    // still behind its splash screen: 3D, maps, large bundles) - has not rendered: wait for it rather
+    // than recording the spinner as the page.
+    const notRendered = (page: typeof read) => STILL_LOADING.test(page.pageText) || !(page.buttons.length || page.inputs.length || page.headings.length || page.clickables.length);
+    for (let attempt = 0; attempt < LOADING_RETRIES && notRendered(read); attempt++) {
+      await pg.waitForLoadState("networkidle", { timeout: 4_000 }).catch(() => undefined);
+      await pg.waitForTimeout(1_500);
+      read = await readPage(pg);
+    }
+    const { hasPassword, hasDialog, ...data } = read;
     const finalPath = new URL(pg.url()).pathname;
     const requestedPath = new URL(url).pathname;
     const redirectedToLogin = finalPath !== requestedPath && LOGIN_ROUTE.test(finalPath) && !LOGIN_ROUTE.test(requestedPath);

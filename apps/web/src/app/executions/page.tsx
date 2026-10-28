@@ -13,7 +13,8 @@ import { PERMISSIONS } from "@ai-qa/domain";
 
 
 interface StepLogEntry { index: number; action: string; target: string; status: "PENDING" | "RUNNING" | "PASSED" | "FAILED"; durationMs?: number; error?: string; matchedBy?: string; loose?: boolean }
-interface PlanItem { testCaseId: string; status: string; errorMessage: string | null; durationMs: number | null; stepLog?: StepLogEntry[] | null; testCase: { id: string; title: string; capability: string | null; category: string | null } }
+interface VariantResult { label: string; status: string; error?: string; durationMs: number }
+interface PlanItem { testCaseId: string; status: string; errorMessage: string | null; durationMs: number | null; stepLog?: StepLogEntry[] | null; variants?: VariantResult[] | null; testCase: { id: string; title: string; capability: string | null; category: string | null } }
 interface PlanSummary {
   id: string; status: string; trigger: string; branch: string; commitSha: string | null; environmentUrl: string;
   project?: { id: string; name: string; defaultBranch: string };
@@ -22,7 +23,7 @@ interface PlanSummary {
 }
 interface PlanDetail extends PlanSummary {
   items: PlanItem[];
-  artifacts: Array<{ id: string; kind: string; testCaseId: string | null; url: string }>;
+  artifacts: Array<{ id: string; kind: string; testCaseId: string | null; name?: string; url: string }>;
 }
 interface EnvironmentDto { id: string; name: string; url: string; isDefault: boolean }
 
@@ -47,6 +48,22 @@ function StepLog({ steps }: { steps: StepLogEntry[] }) {
       ))}
     </ol>
   );
+}
+
+/** The failure screenshot shown right under the failed test's steps: no modal round-trip to see what the page looked like. */
+function InlineScreenshot({ url, onOpen }: { url: string; onOpen: () => void }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    let objectUrl: string | undefined;
+    let cancelled = false;
+    fetch(`${apiUrl}${url}`, { headers: { Authorization: `Bearer ${apiToken.get() ?? ""}` } })
+      .then((response) => (response.ok ? response.blob() : Promise.reject()))
+      .then((blob) => { objectUrl = URL.createObjectURL(blob); if (!cancelled) setSrc(objectUrl); })
+      .catch(() => undefined);
+    return () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [url]);
+  if (!src) return null;
+  return <button type="button" className="inline-shot" title="Open full size" onClick={onOpen}><img src={src} alt="Page at the moment the test failed" /></button>;
 }
 
 function ArtifactViewer({ artifact, onClose }: { artifact: { kind: string; url: string }; onClose: () => void }) {
@@ -274,6 +291,20 @@ export default function ExecutionsPage() {
                         ))}
                       </span>
                       {item.stepLog?.length && (openSteps[item.testCaseId] ?? (item.status === "RUNNING" || item.status === "FAILED")) ? <StepLog steps={item.stepLog} /> : null}
+                      {item.variants?.length ? <ol className="run-variants" aria-label="Results per parameter set">
+                        {item.variants.map((variant, index) => {
+                          const shot = detail.artifacts.find((artifact) => artifact.testCaseId === item.testCaseId && artifact.kind === "SCREENSHOT" && artifact.name?.includes(`-set${index + 1}-failure`));
+                          return <li key={variant.label} className={`run-variant ${variant.status.toLowerCase()}`}>
+                            <span className="run-step-mark" aria-hidden="true">{variant.status === "PASSED" ? <Check size={12} /> : <X size={12} />}</span>
+                            <span className="run-step-text"><span className="mono">{variant.label}</span>{variant.error && <small className="error-text">{plain(variant.error)}</small>}</span>
+                            <span className="run-step-time">{(variant.durationMs / 1000).toFixed(1)}s</span>
+                            {shot && <InlineScreenshot url={shot.url} onOpen={() => setArtifactView({ kind: shot.kind, url: shot.url })} />}
+                          </li>;
+                        })}
+                      </ol> : item.status === "FAILED" && (() => {
+                        const shot = detail.artifacts.find((artifact) => artifact.testCaseId === item.testCaseId && artifact.kind === "SCREENSHOT");
+                        return shot ? <InlineScreenshot url={shot.url} onOpen={() => setArtifactView({ kind: shot.kind, url: shot.url })} /> : null;
+                      })()}
                     </div>
                   ))}
                 </div>

@@ -101,17 +101,22 @@ export async function genericLogin(page: SessionPage, baseUrl: string, credentia
     await page.goto(new URL(credentials.loginUrl?.trim() || "/", baseUrl).toString(), { waitUntil: "domcontentloaded", timeout: 60_000 });
     const password = page.locator(credentials.passwordSelector?.trim() || 'input[type="password"]').first();
     if (!(await password.waitFor({ state: "visible", timeout: 8_000 }).then(() => true).catch(() => false))) {
-      const trigger = credentials.loginTrigger?.trim()
-        ? page.locator(credentials.loginTrigger.trim()).first()
+      // The trigger is either a selector or just the button's visible text ("Product Rack").
+      const raw = credentials.loginTrigger?.trim() ?? "";
+      const trigger = raw
+        ? page.locator(/[#.[\]=>:]/.test(raw) ? raw : `text="${raw.replace(/"/g, '\\"')}"`).first()
         : page.getByRole("button", { name: /log ?in|sign ?in/i }).or(page.getByRole("link", { name: /log ?in|sign ?in/i })).first();
       await trigger.click({ timeout: 5_000 }).catch(() => undefined);
       await password.waitFor({ state: "visible", timeout: 15_000 });
     }
+    // Let the form finish initializing: a phone widget filled before it sets its country code sends a
+    // malformed number (Tailorcarte: 404 "user not found" on a correct login).
+    await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => undefined);
     const form = password.locator("xpath=ancestor::form[1]");
     const scope = (await form.count()) ? form : page;
     const username = credentials.usernameSelector?.trim()
       ? page.locator(credentials.usernameSelector.trim()).first()
-      : scope.locator('input[type="email"]:visible, input[name*="user" i]:visible, input[name*="email" i]:visible, input[type="text"]:visible').first();
+      : scope.locator('input[autocomplete="username"]:visible, input[type="email"]:visible, input[type="tel"]:visible, input[name*="user" i]:visible, input[name*="email" i]:visible, input[name*="phone" i]:visible, input[name*="mobile" i]:visible, input[type="text"]:visible').first();
     await username.fill(credentials.username, { timeout: 16_000 });
     await username.press("Tab").catch(() => undefined); // many apps validate on blur
     await password.fill(credentials.password, { timeout: 16_000 });

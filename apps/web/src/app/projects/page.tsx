@@ -6,7 +6,7 @@ import { BitbucketIcon, GithubIcon, GitlabIcon } from "@/components/brand-icons"
 import { AppShell } from "@/components/app-shell";
 import { ImportRepositoryModal } from "@/components/import-repository-modal";
 import { RouteMapModal } from "@/components/route-map-modal";
-import { analysisOutcome, api, type AnalysisRunDto, type ProjectSummaryDto } from "@/lib/api";
+import { analysisOutcome, api, fmtDay, shortSha, type AnalysisRunDto, type ProjectSummaryDto } from "@/lib/api";
 import { can, requireSubscription, useElapsed, useMe, useToast } from "@/lib/hooks";
 import { PERMISSIONS } from "@ai-qa/domain";
 
@@ -15,10 +15,11 @@ type Provider = "all" | "github" | "bitbucket" | "gitlab";
 const providerLabels: Record<Exclude<Provider, "all">, string> = { github: "GitHub", bitbucket: "Bitbucket", gitlab: "GitLab" };
 type Project = ProjectSummaryDto;
 interface ConnectionDto { id: string; provider: string; }
-interface AnalysisRun { id?: string; branch: string; status: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED"; completedAt: string | null; createdAt?: string; }
+type AnalysisRun = Pick<AnalysisRunDto, "branch" | "status" | "completedAt"> & Partial<AnalysisRunDto>;
+interface TestCounts { total: number; review: number; heldOut: number; approved: number }
 const isAnalysisRunning = (run?: AnalysisRun) => run?.status === "RUNNING" || run?.status === "QUEUED";
 
-interface GenerationRunDto { id: string; mode: string; status: string; created: number | null; duplicatesSkipped: number | null; errorMessage: string | null; createdAt: string; completedAt: string | null; }
+interface GenerationRunDto { id: string; mode: string; status: string; created: number | null; duplicatesSkipped: number | null; errorMessage: string | null; createdAt: string; completedAt: string | null; report?: { planned?: number; generated?: number; verified?: number; heldOut?: number } | null; }
 
 const providerFor = (project: Project) => project.provider.toLowerCase() as Exclude<Provider, "all">;
 
@@ -33,7 +34,7 @@ export default function ProjectsPage() {
   const [busySince, setBusySince] = useState<number | null>(null);
   const [analysisByProject, setAnalysisByProject] = useState<Record<string, AnalysisRun[]>>({});
   const [genByProject, setGenByProject] = useState<Record<string, GenerationRunDto>>({});
-  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [counts, setCounts] = useState<Record<string, TestCounts>>({});
   const [connectedProviders, setConnectedProviders] = useState<string[]>([]);
   const prevGenStatus = useRef<Record<string, string>>({});
   const prevAnalysisStatus = useRef<Record<string, string>>({});
@@ -75,9 +76,15 @@ export default function ProjectsPage() {
   const loadCounts = useCallback(async () => {
     if (!token) return;
     try {
-      const rows = await fetch(`${apiUrl}/v1/test-cases`, { headers: { Authorization: `Bearer ${token}` } }).then((r) => (r.ok ? r.json() as Promise<Array<{ projectId: string }>> : Promise.reject()));
-      const next: Record<string, number> = {};
-      for (const row of rows) next[row.projectId] = (next[row.projectId] ?? 0) + 1;
+      const rows = await fetch(`${apiUrl}/v1/test-cases`, { headers: { Authorization: `Bearer ${token}` } }).then((r) => (r.ok ? r.json() as Promise<Array<{ projectId: string; status: string }>> : Promise.reject()));
+      const next: Record<string, TestCounts> = {};
+      for (const row of rows) {
+        const entry = next[row.projectId] ??= { total: 0, review: 0, heldOut: 0, approved: 0 };
+        entry.total += 1;
+        if (row.status === "PENDING_REVIEW") entry.review += 1;
+        else if (row.status === "NEEDS_REVIEW") entry.heldOut += 1;
+        else if (row.status === "APPROVED") entry.approved += 1;
+      }
       setCounts(next);
     } catch { /* counts are cosmetic */ }
   }, [token]);
@@ -264,7 +271,7 @@ const getProviderIcon = (provider: "github" | "bitbucket" | "gitlab") => {
   if (provider === "gitlab") return <GitlabIcon size={13} />
 }
 
-function ProjectCard({ project, analyses, busyId, busySince, generation, testCount, serverGenerating, connectedProviders, onAnalyze, onGenerate, onDelete, onSaveBackend }: { project: Project; analyses: AnalysisRun[]; busyId: string | null; busySince: number | null; generation?: GenerationRunDto; testCount?: number; serverGenerating: boolean; connectedProviders: string[]; onAnalyze: (project: Project) => void; onGenerate: (project: Project) => void; onDelete: (project: Project) => void; onSaveBackend?: (project: Project, value: string) => Promise<boolean> }) {
+function ProjectCard({ project, analyses, busyId, busySince, generation, testCount, serverGenerating, connectedProviders, onAnalyze, onGenerate, onDelete, onSaveBackend }: { project: Project; analyses: AnalysisRun[]; busyId: string | null; busySince: number | null; generation?: GenerationRunDto; testCount?: TestCounts; serverGenerating: boolean; connectedProviders: string[]; onAnalyze: (project: Project) => void; onGenerate: (project: Project) => void; onDelete: (project: Project) => void; onSaveBackend?: (project: Project, value: string) => Promise<boolean> }) {
   const [editingBackend, setEditingBackend] = useState(false);
   const backendLabel = project.backendDirectories?.length ? project.backendDirectories.join(", ") : "no backend";
   const me = useMe();
@@ -272,7 +279,16 @@ function ProjectCard({ project, analyses, busyId, busySince, generation, testCou
   const provider = providerFor(project);
   const branchRuns = analyses.filter((analysis) => analysis.branch === project.defaultBranch);
   const latestRun = branchRuns[0];
-  const analyzed = branchRuns.some((analysis) => analysis.status === "COMPLETED");
+  const lastGood = branchRuns.find((analysis) => analysis.status === "COMPLETED");
+  const analyzed = Boolean(lastGood);
+  const model = lastGood?.knowledgeModel;
+  const lastAnalyzedAt = lastGood?.completedAt ?? lastGood?.createdAt;
+  const pagesLinked = model?.codeLinks;
+  const crawled = model?.routeSummary;
+  const featureCount = model?.flowSpecs?.length;
+  const endpointCount = model?.endpoints?.length;
+  const report = generation?.report;
+  const generatedBefore = generation && generation.status === "COMPLETED" && report;
   const analyzing = busyId === `analyze-${project.id}` || isAnalysisRunning(latestRun);
   const generating = busyId === `generate-${project.id}` || serverGenerating;
   const genStale = generation?.status === "RUNNING" && !serverGenerating;
@@ -310,21 +326,28 @@ function ProjectCard({ project, analyses, busyId, busySince, generation, testCou
           ? <span className="status-live"><Loader2 size={12} className="spin" />{analyzed ? "re-analyzing" : "analyzing"}{analysisElapsed ? ` · ${analysisElapsed}` : ""}</span>
           : latestRun?.status === "FAILED"
             ? <span className="gen-failed" title={analyzed ? "The latest run failed; the previous analysis is still in use." : undefined}><AlertCircle size={12} />analysis failed{analyzed ? " · using previous" : ""}</span>
-            : <span className={analyzed ? "state-done" : undefined}><Clock3 size={12} />{analyzed ? "analyzed" : "ready to analyze"}</span>}
+            : <span className={analyzed ? "state-done" : undefined} title={analyzed ? `Analyzed ${new Date(lastAnalyzedAt ?? "").toLocaleString()}${lastGood?.commitSha ? ` at commit ${shortSha(lastGood.commitSha)}` : ""}` : undefined}><Clock3 size={12} />{analyzed ? `Analyzed ${fmtDay(lastAnalyzedAt)}` : "ready to analyze"}</span>}
         {generating
-          ? <span className="status-live"><Loader2 size={12} className="spin" />generating tests{generationElapsed ? ` · ${generationElapsed}` : ""}</span>
+          ? <span className="status-live"><Loader2 size={12} className="spin" />Generating tests{generationElapsed ? ` · ${generationElapsed}` : ""}</span>
           : genStale || generation?.status === "FAILED"
             ? <span className="gen-failed"><Bot size={12} />{genStale ? "generation timed out" : "generation failed"}</span>
             : null}
       </div>
+      {analyzed && <div className="project-stats">
+        {crawled && <span title="Pages the live crawl opened, out of all routes found in the code and the app"><MapIcon size={12} />{crawled.verified} of {crawled.total} routes crawled</span>}
+        {pagesLinked && <span className={pagesLinked.unlinked.length ? "warn" : undefined} title={pagesLinked.unlinked.length ? `No source file found for: ${pagesLinked.unlinked.join(", ")}. These pages get no generated tests.` : "Every crawled page was matched to its source file."}><FolderTree size={12} />{pagesLinked.linked} of {pagesLinked.pages} pages linked to code</span>}
+        {featureCount != null && <span title="Features described from the code: the basis of generated tests"><SearchCode size={12} />{featureCount} feature{featureCount === 1 ? "" : "s"}{endpointCount != null ? ` · ${endpointCount} endpoints` : ""}</span>}
+        {generatedBefore && <span title={`${report.planned ?? 0} scenarios planned, ${report.generated ?? 0} drafted, ${report.verified ?? 0} verified against the live app, ${report.heldOut ?? 0} held out for review`}><Bot size={12} />generated {fmtDay(generation.completedAt ?? generation.createdAt)} · {report.generated ?? 0} drafted · {report.verified ?? 0} verified{report.heldOut ? ` · ${report.heldOut} held out` : ""}</span>}
+      </div>}
     </div>
     <div className="project-card-actions">
       <div className="test-count">
         <small>test cases</small>
-        <strong>{testCount != null ? testCount : "–"}</strong>
+        <strong>{testCount != null ? testCount.total : "–"}</strong>
+        {testCount != null && (testCount.review > 0 || testCount.heldOut > 0 || testCount.approved > 0) && <small title="Pending review · held out by verification · approved">{[testCount.review && `${testCount.review} to review`, testCount.heldOut && `${testCount.heldOut} held out`, testCount.approved && `${testCount.approved} approved`].filter(Boolean).join(" · ")}</small>}
       </div>
       <div className="project-buttons">
-        <button className="analyze-button" title="Pages found in the live app" onClick={() => setRouteMapOpen(true)}><MapIcon size={13} />Routes</button>
+        {analyzed && <button className="analyze-button" title="Pages found in the live app" onClick={() => setRouteMapOpen(true)}><MapIcon size={13} />Routes</button>}
         <span className="generate-tooltip" data-tooltip={analyzeTooltip}>
           {can(me, PERMISSIONS.TEST_CASES_CREATE) && <button className="analyze-button" disabled={analyzeDisabled} onClick={() => onAnalyze(project)}>
             <SearchCode size={13} />{analyzing ? "Analyzing…" : "Analyze"}</button>}

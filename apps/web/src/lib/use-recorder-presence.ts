@@ -62,6 +62,26 @@ async function probeOnce(spellingIndex: number): Promise<RecorderPresence> {
   }
 }
 
+/** Asks the RUNNING recorder to open a recording session over its local presence
+ *  endpoint (POST /record) — the browser-friendly replacement for navigating to
+ *  `proofline-recorder://…`, which on Linux goes through xdg-open ("Open
+ *  xdg-open?" on every launch, "resource not available" when the registration is
+ *  stale). The recording window is Electron's own Chromium — no external browser
+ *  and no OS protocol handler are involved, so this works under any packaging
+ *  (AppImage, Flatpak, system install). The body is sent as text/plain so the
+ *  request stays a CORS "simple request" (no preflight); the recorder parses the
+ *  JSON regardless. Returns true when a running recorder accepted the launch;
+ *  false when nothing answered (caller falls back to the OS deep link). */
+export async function launchRecorder(link: string): Promise<boolean> {
+  for (const base of PRESENCE_URLS) {
+    try {
+      const response = await fetchWithTimeout(`${base}/record`, { method: "POST", mode: "cors", headers: { "Content-Type": "text/plain" }, body: JSON.stringify({ link }) });
+      if (response.ok) return true;
+    } catch { /* not answering on this spelling — try the next */ }
+  }
+  return false;
+}
+
 /** Asks the RUNNING recorder to uninstall itself over its local presence endpoint
  *  (POST /uninstall) — the browser-friendly replacement for the old
  *  `proofline-recorder://uninstall` deep link, which made Chrome show its

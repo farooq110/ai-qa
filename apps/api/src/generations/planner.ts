@@ -106,10 +106,31 @@ export function findSetupChain(actions: FlowSpecAction[], target: FlowSpecAction
   return null;
 }
 
+const CREATE_LABEL = /^(add|create|new|register|invite)\b/i;
+const ROW_LABEL = /^(edit|delete|remove|view|void|archive)\b/i;
+
+/** Opens an empty form and saves a new record: the action that can make a record for a row action to work on. */
+export function isCreateAction(action: FlowSpecAction): boolean {
+  return action.form.length > 0 && Boolean(action.submit) && CREATE_LABEL.test(action.trigger.label || action.name);
+}
+
+/** The trigger is a per-record control (Edit/Delete on a list row): the test must say WHICH record. */
+export function isRowScoped(action: FlowSpecAction): boolean {
+  if (typeof action.rowScoped === "boolean") return action.rowScoped && !isCreateAction(action);
+  return !isCreateAction(action) && action.kind !== "form" && !action.trigger.route.includes(":") && ROW_LABEL.test(action.trigger.label);
+}
+
 function setupFor(moduleActions: FlowSpecAction[], action: FlowSpecAction): SetupRecipe {
-  if (!action.preconditions.some((entry) => entry.entity && entry.values.length)) return { strategy: "none" };
-  const chain = findSetupChain(moduleActions, action);
-  return chain ? { strategy: "chain", chain } : { strategy: "existing" };
+  const needsState = action.preconditions.some((entry) => entry.entity && entry.values.length);
+  const chain = needsState ? findSetupChain(moduleActions, action) : null;
+  if (chain) return { strategy: "chain", chain };
+  // A row action needs a record to act on, and an empty list has none: create one first, in the test.
+  if (isRowScoped(action)) {
+    const creator = moduleActions.find((other) => other !== action && !isRowScoped(other) && isCreateAction(other) && other.trigger.route === action.trigger.route)
+      ?? moduleActions.find((other) => other !== action && !isRowScoped(other) && isCreateAction(other));
+    if (creator) return { strategy: "chain", chain: [creator] };
+  }
+  return needsState ? { strategy: "existing" } : { strategy: "none" };
 }
 
 /** Deterministic scenario planning over already-anchored specs. Never calls the model. */

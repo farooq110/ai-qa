@@ -60,6 +60,8 @@ export interface FlowSpecAction {
   trigger: { route: string; label: string; control: string; container: string };
   /** The button that saves/confirms the form or dialog the trigger opens; null when the trigger itself performs the action. */
   submit?: { label: string } | null;
+  /** The trigger is repeated per record of a list/table/card grid and acts on that one record (Edit, Delete, View on a row). */
+  rowScoped?: boolean;
   preconditions: FlowSpecPrecondition[];
   permission: { value: string; enforcedBy: "client" | "server" } | null;
   form: FlowSpecFormField[];

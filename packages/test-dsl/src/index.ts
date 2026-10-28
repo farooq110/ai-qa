@@ -11,6 +11,8 @@ export interface TestStep {
   region?: StepRegion;
   /** Per-channel tolerance for assertColor canvas sampling (default 35 — lighting headroom). */
   tolerance?: number;
+  /** Visible text of one record (a table row, card or list item): the click lands on `target` inside the row showing it, not on the first match on the page. */
+  within?: string;
   /** ARIA role recorded during verification: when set, the runner looks up this step's target by role+name only, never the fuzzy stages. */
   role?: string;
   /** Marks the step the test exists to prove: the dry run's mutation check removes exactly these steps and the test must then fail. */
@@ -62,3 +64,4 @@ export * from "./api-response";
 export * from "./text-diff";
 export * from "./host-limiter";
 export * from "./session";
+export * from "./fixtures";

@@ -50,6 +50,19 @@ export function fmtRelative(value: string | Date | null | undefined) {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+/** "today, 2:05 PM", "yesterday, 9:10 AM", "3 days ago", then a plain date: when something last happened, by calendar day. */
+export function fmtDay(value: string | Date | null | undefined) {
+  if (!value) return "—";
+  const date = new Date(value);
+  const midnight = (day: Date) => new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime();
+  const days = Math.round((midnight(new Date()) - midnight(date)) / 86_400_000);
+  const time = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (days <= 0) return `today, ${time}`;
+  if (days === 1) return `yesterday, ${time}`;
+  if (days < 7) return `${days} days ago`;
+  return date.toLocaleDateString([], { month: "short", day: "numeric", year: date.getFullYear() === new Date().getFullYear() ? undefined : "numeric" });
+}
+
 export function shortSha(sha: string | null | undefined) {
   return sha ? sha.slice(0, 7) : "—";
 }
@@ -102,14 +115,17 @@ export async function listProjects(): Promise<ProjectSummaryDto[]> {
 export interface AnalysisRunDto {
   id: string; branch: string; commitSha: string; status: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
   errorMessage: string | null; completedAt: string | null; createdAt?: string;
-  knowledgeModel?: { routes?: unknown[]; discoveryError?: string; routeSummary?: { total: number; verified: number; budgetHit: boolean } } | null;
+  knowledgeModel?: { routes?: unknown[]; endpoints?: unknown[]; flowSpecs?: unknown[]; discoveryError?: string; routeSummary?: { total: number; verified: number; budgetHit: boolean }; codeLinks?: { pages: number; linked: number; unlinked: string[] } } | null;
 }
 
 /** One sentence for a finished analysis: what the live crawl reached, and what to do next. */
 export function analysisOutcome(name: string, run: AnalysisRunDto): string {
   const summary = run.knowledgeModel?.routeSummary;
   const login = run.knowledgeModel?.discoveryError;
-  if (summary?.verified) return `${name}: ${summary.verified} of ${summary.total} pages opened in the live app${summary.budgetHit ? " (crawl budget reached; analyze again to continue)" : ""}.${login ? ` ${login}` : ""} You can now generate tests.`;
+  const links = run.knowledgeModel?.codeLinks;
+  // Pages with no source file get no feature description, so no tests: say which ones, not just how many.
+  const unlinked = links?.unlinked.length ? ` ${links.linked} of ${links.pages} pages linked to their code; not linked (no tests for these): ${links.unlinked.slice(0, 6).join(", ")}${links.unlinked.length > 6 ? ` and ${links.unlinked.length - 6} more` : ""}.` : "";
+  if (summary?.verified) return `${name}: ${summary.verified} of ${summary.total} pages opened in the live app${summary.budgetHit ? " (crawl budget reached; analyze again to continue)" : ""}.${unlinked}${login ? ` ${login}` : ""} You can now generate tests.`;
   if (login) return `${name}: analysis completed, but the live app could not be read: ${login}`;
   return `${name}: analysis completed, but no pages could be opened in the live app. Add an environment URL (and login if needed) in Settings.`;
 }

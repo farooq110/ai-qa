@@ -550,6 +550,9 @@ model ExecutionPlanItem {
   finishedAt      DateTime?
   // Live per-step progress written by the worker while the test runs (see StepLogEntry in apps/workers).
   stepLog         Json?
+  // One result per parameter set when the test ran once per set (a route with a list of values):
+  // [{ label, values, status, error, durationMs }]. Null for a test that ran once.
+  variants        Json?
   executionPlan   ExecutionPlan @relation(fields: [executionPlanId], references: [id], onDelete: Cascade)
   testCase        TestCase      @relation(fields: [testCaseId], references: [id], onDelete: Restrict)
   @@id([executionPlanId, testCaseId])

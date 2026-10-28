@@ -797,6 +797,9 @@ html:has(.shell), html:has(.auth-shell) { background: var(--bg); }
 .toast-close { display: inline-grid; place-items: center; flex: none; margin-left: 4px; padding: 3px; border: 0; border-radius: 5px; background: transparent; color: inherit; opacity: 0.7; cursor: pointer; }
 .toast-close:hover { opacity: 1; background: rgb(255 255 255 / 0.14); }
 .project-card-actions { display: flex; align-items: center; gap: 14px; }
+.project-stats { display: flex; align-items: center; gap: 3px 14px; flex-wrap: wrap; font-size: 11px; color: var(--muted); }
+.project-stats > span { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.project-stats .warn { color: var(--change-fg); }
 .test-count { display: grid; gap: 1px; text-align: right; min-width: 74px; }
 .test-count small { font-size: 11px; color: var(--muted); }
 .test-count strong { font-family: var(--font-mono), monospace; font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 500; }
@@ -1260,3 +1263,11 @@ html:has(.shell), html:has(.auth-shell) { background: var(--bg); }
 .billing-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
 @media (max-width: 1020px) { .billing-grid { grid-template-columns: 1fr; } }
 .billing-col .usage-meter { padding-bottom: 0; margin-bottom: 0; border-bottom: 0; }
+
+.inline-shot { grid-column: 1 / -1; display: block; margin-top: 6px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: none; cursor: zoom-in; overflow: hidden; }
+.inline-shot img { display: block; width: 100%; height: auto; max-height: 260px; object-fit: cover; object-position: top; }
+.run-variants { grid-column: 1 / -1; display: grid; gap: 4px; margin: 6px 0 0; padding: 0; list-style: none; }
+.run-variant { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: start; gap: 8px; font-size: 12px; }
+.run-variant .inline-shot { grid-column: 2 / -1; margin-top: 2px; }
+.run-variant.failed .run-step-mark { color: var(--change-fg); }
+.run-variant.passed .run-step-mark { color: var(--approve-fg); }
